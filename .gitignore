@@ -1,0 +1,39 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Go
+/bin/
+/dist/
+*.test
+coverage.out
+coverage.html
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+build/
+.next/
+coverage/
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+data/
+logs/
+*.log
+
+# WSL files
+*.Identifier
