@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package arda.v1;
+
+option go_package = "github.com/aswinsreeraj/arda/gen/go/arda/v1;ardav1";
+
+// ReliabilityService evaluates whether a proposed agent decision
+// has sufficient evidence to proceed without human review.
+service ReliabilityService {
+  rpc Gate(GateRequest) returns (GateResponse);
+}
+
+message GateRequest {
+  // Tenant and agent scope for retrieving reference examples.
+  string tenant_id = 1;
+  string agent_id = 2;
+
+  // Description of the case being evaluated.
+  string case_description = 3;
+
+  // The agent's proposed outcome, compared against relevant
+  // reference evidence by the reliability evaluation.
+  string proposed_decision = 4;
+
+  // Minimum acceptable calibrated confidence, in [0.0, 1.0].
+  // Invalid values must produce INVALID_ARGUMENT.
+  double reliability_threshold = 5;
+}
+
+message GateResponse {
+  // Calibrated confidence, in [0.0, 1.0].
+  double confidence = 1;
+
+  // PASS only when the threshold is met and sufficient
+  // supporting evidence exists. Otherwise, require review.
+  GateOutcome outcome = 2;
+
+  // Machine-readable explanation for the gate outcome.
+  string reason_code = 3;
+
+  // Relevant reference examples supporting the evaluation.
+  repeated ReferenceNeighbor neighbors = 4;
+}
+
+enum GateOutcome {
+  GATE_OUTCOME_UNSPECIFIED = 0;
+  GATE_OUTCOME_PASS = 1;
+  GATE_OUTCOME_REVIEW_REQUIRED = 2;
+}
+
+message ReferenceNeighbor {
+  string reference_example_id = 1;
+  string label = 2;
+  double similarity = 3;
+}
