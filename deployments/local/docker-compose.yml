@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: arda-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-arda}
+      POSTGRES_USER: ${POSTGRES_USER:-arda_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arda_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arda_user} -d ${POSTGRES_DB:-arda}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  migrate:
+    image: migrate/migrate:v4.18.2
+    container_name: arda-migrate
+    profiles:
+      - tools
+    volumes:
+      - ../../migrations:/migrations:ro
+    entrypoint:
+      - migrate
+      - -path=/migrations
+      - -database=postgres://${POSTGRES_USER:-arda_user}:${POSTGRES_PASSWORD:-arda_password}@postgres:5432/${POSTGRES_DB:-arda}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    name: arda_postgres_data
