@@ -3,8 +3,10 @@ module github.com/aswinsreeraj/arda
 go 1.27.1
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
+	golang.org/x/time v0.15.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )
