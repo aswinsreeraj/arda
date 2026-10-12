@@ -56,23 +56,25 @@ services:
     container_name: arda-temporal
     restart: unless-stopped
     environment:
-      - DB=postgresql
+      - DB=postgres12
       - DB_PORT=5432
       - POSTGRES_USER=${POSTGRES_USER:-arda_user}
       - POSTGRES_PWD=${POSTGRES_PASSWORD:-arda_password}
       - POSTGRES_SEEDS=postgres
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    #     - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
     ports:
       - "127.0.0.1:${TEMPORAL_PORT:-7233}:7233"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "tctl", "--address", "127.0.0.1:7233", "cluster", "health" ]
+      test:
+        - CMD-SHELL
+        - temporal operator cluster health --address "$$(hostname -i | awk '{print $$1}'):7233"
       interval: 5s
       timeout: 5s
       retries: 15
-      start_period: 15s
+      start_period: 30s
 
   temporal-ui:
     image: temporalio/ui:2.26.2
@@ -86,7 +88,6 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
-
 
 volumes:
   postgres_data:
