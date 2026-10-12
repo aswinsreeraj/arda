@@ -24,33 +24,50 @@ This guide describes how to configure, run, and manage the local PostgreSQL data
    - `POSTGRES_USER=arda_user`
    - `POSTGRES_PASSWORD=arda_password`
    - `DATABASE_URL=postgres://arda_user:arda_password@127.0.0.1:5432/arda?sslmode=disable`
+   - `VAULT_ADDR=http://127.0.0.1:8200`
+   - `VAULT_TOKEN=root`
+   - `VAULT_MOUNT=secret`
+   - `VAULT_TIMEOUT=5s`
+   - `TEMPORAL_ADDRESS=127.0.0.1:7233`
+   - `TEMPORAL_NAMESPACE=default`
+   - `TEMPORAL_TASK_QUEUE=arda-v1-task-queue`
+   - `TEMPORAL_UI_PORT=8233`
 
 > [!NOTE]
 > `.env` is explicitly ignored by Git (`.gitignore`). Never commit real credentials or production secrets to source control.
 
 ---
 
-## 2. Starting PostgreSQL
+## 2. Starting Local Services (PostgreSQL, Vault & Temporal)
 
-Start the local PostgreSQL service in the background:
+Start local PostgreSQL, Vault, and Temporal services in the background:
 
 ```bash
 docker compose -f deployments/local/docker-compose.yml up -d
 ```
 
-Check the health status of the container:
+Check the health status of the containers:
 
 ```bash
 docker compose -f deployments/local/docker-compose.yml ps
 ```
 
-The service includes an automated health check using `pg_isready` and listens only on `127.0.0.1:5432` for local security.
+The services include automated health checks and local port bindings:
+- **PostgreSQL**: `127.0.0.1:5432` (relational database for ARDA registry and application state).
+- **Vault**: `127.0.0.1:8200` (KV v2 secrets engine mounted at `secret/`).
+- **Temporal Server**: `127.0.0.1:7233` (gRPC frontend for workflow orchestrations). Automatically initializes isolated `temporal` and `temporal_visibility` databases in PostgreSQL.
+- **Temporal Web UI**: `127.0.0.1:8233` (browser dashboard for inspecting workflows, histories, and task queues).
 
-To stop the PostgreSQL service without losing data:
+> [!WARNING]
+> **Production Boundary**: Local container configurations (Vault `-dev` mode, Temporal `auto-setup`) are strictly for local testing and development. In production, run managed or clustered deployments with mutual TLS, external KMS unseal, and managed persistence.
+
+To stop the services without losing data:
 
 ```bash
+
 docker compose -f deployments/local/docker-compose.yml down
 ```
+
 
 ---
 
