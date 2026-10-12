@@ -11,10 +11,9 @@ import (
 
 type contextKey string
 
-const (
-	tenantIDContextKey contextKey = "tenant_id"
-	TenantHeader                  = "X-Tenant-ID"
-)
+const tenantIDContextKey contextKey = "tenant_id"
+
+const TenantHeader = "X-Tenant-ID"
 
 // WithTenantID returns a new context with the given tenant ID.
 func WithTenantID(ctx context.Context, tenantID uuid.UUID) context.Context {
@@ -33,7 +32,25 @@ type TenantResolver interface {
 	ResolveTenant(r *http.Request) (uuid.UUID, error)
 }
 
-// HeaderTenantResolver extracts the tenant UUID from the trusted X-Tenant-ID header.
+// ContextTenantResolver extracts the tenant UUID exclusively from trusted request context.
+// It strictly rejects missing or nil tenant IDs with an unauthenticated domain error
+// and never falls back to client-supplied headers.
+type ContextTenantResolver struct{}
+
+func (c ContextTenantResolver) ResolveTenant(r *http.Request) (uuid.UUID, error) {
+	tenantID, ok := TenantIDFromContext(r.Context())
+	if !ok || tenantID == uuid.Nil {
+		return uuid.Nil, domain.NewUnauthenticatedError("missing or invalid tenant context")
+	}
+	return tenantID, nil
+}
+
+// HeaderTenantResolver extracts the tenant UUID from the X-Tenant-ID header.
+//
+// SECURITY WARNING:
+// This resolver trusts unauthenticated client-supplied HTTP headers and must ONLY be used
+// for standalone local testing or loopback execution. In production or behind an authenticating gateway,
+// use ContextTenantResolver to ensure tenant identity is derived exclusively from cryptographically verified claims.
 type HeaderTenantResolver struct{}
 
 func (h HeaderTenantResolver) ResolveTenant(r *http.Request) (uuid.UUID, error) {

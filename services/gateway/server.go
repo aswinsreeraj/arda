@@ -10,6 +10,7 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
 	"github.com/aswinsreeraj/arda/services/registry"
+	registryhttp "github.com/aswinsreeraj/arda/services/registry/http"
 )
 
 // Config holds runtime configuration for API Gateway v1.
@@ -65,10 +66,12 @@ func NewServer(cfg Config, db *sql.DB) (*Server, error) {
 		relSvc = relClient
 	}
 
-	// Mount Registry HTTP handlers if database connection is supplied
+	// Mount Registry HTTP handlers if database connection is supplied.
+	// Uses ContextTenantResolver so tenant identity is derived exclusively
+	// from the cryptographically verified JWT context and never from headers.
 	var regHandler http.Handler
 	if db != nil {
-		regServer := registry.NewServer(db, nil)
+		regServer := registry.NewServer(db, registryhttp.ContextTenantResolver{})
 		regHandler = regServer.Handler
 	}
 

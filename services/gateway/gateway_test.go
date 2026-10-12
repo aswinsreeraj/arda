@@ -554,3 +554,61 @@ func TestGateway_UpstreamFailures(t *testing.T) {
 		}
 	})
 }
+
+// 9. Gateway-to-Registry in-process tenant context propagation
+func TestGateway_RegistryContextTenantResolver(t *testing.T) {
+	legitTenantID := uuid.New()
+	spoofedTenantID := uuid.New()
+
+	// Handler wrapped with ContextTenantResolver (as mounted by Gateway)
+	var capturedTenantID uuid.UUID
+	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := registryhttp.TenantIDFromContext(r.Context()); ok {
+			capturedTenantID = id
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	})
+
+	resolver := registryhttp.ContextTenantResolver{}
+	regHandler := registryhttp.TenantMiddleware(resolver, dummyHandler)
+
+	gw, _ := createTestGateway(t, regHandler, nil, nil)
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	id := auth.Identity{
+		UserID:   "developer-1",
+		TenantID: legitTenantID,
+		Role:     auth.RoleAgentDeveloper,
+	}
+	tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+	t.Run("request succeeds without X-Tenant-ID header", func(t *testing.T) {
+		capturedTenantID = uuid.Nil
+		resp, body := doRequest(ts, "POST", "/api/v1/agents", tok, nil, map[string]any{"name": "Agent A"})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+		if capturedTenantID != legitTenantID {
+			t.Fatalf("expected downstream to receive %s, got %s", legitTenantID, capturedTenantID)
+		}
+	})
+
+	t.Run("forged X-Tenant-ID header cannot override trusted context tenant", func(t *testing.T) {
+		capturedTenantID = uuid.Nil
+		headers := map[string]string{
+			"X-Tenant-ID": spoofedTenantID.String(),
+		}
+		resp, body := doRequest(ts, "POST", "/api/v1/agents", tok, headers, map[string]any{"name": "Agent A"})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+		if capturedTenantID != legitTenantID {
+			t.Fatalf("spoofing leak: downstream received %s instead of %s", capturedTenantID, legitTenantID)
+		}
+		if capturedTenantID == spoofedTenantID {
+			t.Fatalf("CRITICAL SECURITY FLAW: downstream accepted spoofed header!")
+		}
+	})
+}

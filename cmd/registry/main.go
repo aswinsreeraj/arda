@@ -39,6 +39,11 @@ func main() {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
+	// SECURITY NOTE: The standalone Agent Registry defaults to HeaderTenantResolver (when resolver is nil),
+	// which trusts the client-supplied X-Tenant-ID header directly without cryptographic verification.
+	// This mode is intended strictly for standalone local development and automated store tests.
+	// In production, the Registry must run in-process behind the API Gateway using ContextTenantResolver.
+	// To prevent unauthorized external access, this standalone listener must remain bound to loopback (127.0.0.1).
 	server := registry.NewServer(db, nil)
 	addr := fmt.Sprintf("127.0.0.1:%s", port)
 	httpServer := &http.Server{
