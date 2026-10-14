@@ -12,13 +12,16 @@ import (
 	"time"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
+	"github.com/aswinsreeraj/arda/services/registry/domain"
 	registryhttp "github.com/aswinsreeraj/arda/services/registry/http"
 	"github.com/aswinsreeraj/arda/services/registry/service"
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/client"
 )
 
 var testSecret = []byte("super-secure-test-signing-key-12345")
@@ -699,6 +702,479 @@ func TestGateway_GetAgentVersionEndpoint(t *testing.T) {
 		}
 		if mockReg.lastSeenTenantID == spoofedID {
 			t.Fatalf("CRITICAL SECURITY FLAW: downstream accepted spoofed X-Tenant-ID!")
+		}
+	})
+}
+
+// Mock WorkflowRun implementation for unit tests
+type mockWorkflowRun struct {
+	workflowID string
+	runID      string
+}
+
+func (m *mockWorkflowRun) GetID() string                                       { return m.workflowID }
+func (m *mockWorkflowRun) GetRunID() string                                    { return m.runID }
+func (m *mockWorkflowRun) Get(ctx context.Context, valuePtr interface{}) error { return nil }
+func (m *mockWorkflowRun) GetWithOptions(ctx context.Context, valuePtr interface{}, options client.WorkflowRunGetOptions) error {
+	return nil
+}
+func (m *mockWorkflowRun) GetFirstExecutionRunID() string { return m.runID }
+
+// Mock WorkflowDispatcher for unit tests
+type mockTemporalWorkflowDispatcher struct {
+	startFn   func(ctx context.Context, workflowID string, input temporal.AgentExecutionInput) (client.WorkflowRun, error)
+	lastWfID  string
+	lastInput temporal.AgentExecutionInput
+}
+
+func (m *mockTemporalWorkflowDispatcher) StartAgentExecutionWorkflow(ctx context.Context, workflowID string, input temporal.AgentExecutionInput) (client.WorkflowRun, error) {
+	m.lastWfID = workflowID
+	m.lastInput = input
+	if m.startFn != nil {
+		return m.startFn(ctx, workflowID, input)
+	}
+	return &mockWorkflowRun{workflowID: workflowID, runID: "run-test-123"}, nil
+}
+
+// Mock RegistryService for unit tests
+type mockGatewayRegistryService struct {
+	getLatestPublishedVersionFn func(ctx context.Context, tenantID, agentID uuid.UUID) (*domain.AgentVersion, error)
+	lastSeenTenantID            uuid.UUID
+	lastSeenAgentID             uuid.UUID
+}
+
+func (m *mockGatewayRegistryService) GetLatestPublishedVersion(ctx context.Context, tenantID, agentID uuid.UUID) (*domain.AgentVersion, error) {
+	m.lastSeenTenantID = tenantID
+	m.lastSeenAgentID = agentID
+	if m.getLatestPublishedVersionFn != nil {
+		return m.getLatestPublishedVersionFn(ctx, tenantID, agentID)
+	}
+	return nil, domain.NewNotFoundError("agent not found")
+}
+
+func createExecutionTestGateway(t *testing.T, regSvc gatewayhttp.RegistryService, tempClient gatewayhttp.WorkflowDispatcher) http.Handler {
+	val, err := auth.NewTokenValidator(getTestConfig())
+	if err != nil {
+		t.Fatalf("failed to create validator: %v", err)
+	}
+	limiter := ratelimit.NewLimiter(ratelimit.Config{Enabled: false})
+	return gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
+		JWTValidator:    val,
+		RateLimiter:     limiter,
+		RegistryService: regSvc,
+		TemporalClient:  tempClient,
+	})
+}
+
+// 11. Gateway tenant-scoped agent execution endpoint POST /api/v1/agents/{id}/execute
+func TestGateway_AgentExecutionEndpoint(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	publishedVersionID := uuid.New()
+	path := fmt.Sprintf("/api/v1/agents/%s/execute", agentID)
+
+	publishedVer := &domain.AgentVersion{
+		ID:            publishedVersionID,
+		AgentID:       agentID,
+		VersionNumber: 1,
+		Published:     true,
+	}
+
+	t.Run("1. unauthenticated execution is rejected with 401 UNAUTHENTICATED", func(t *testing.T) {
+		gw := createExecutionTestGateway(t, &mockGatewayRegistryService{}, &mockTemporalWorkflowDispatcher{})
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		resp, body := doRequest(ts, "POST", path, "", nil, map[string]any{"input": map[string]any{"query": "hi"}})
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "UNAUTHENTICATED" {
+			t.Errorf("expected UNAUTHENTICATED error code, got %s", errResp.Error.Code)
+		}
+	})
+
+	t.Run("2. role without agent:execute (reviewer) is denied with 403 FORBIDDEN", func(t *testing.T) {
+		gw := createExecutionTestGateway(t, &mockGatewayRegistryService{}, &mockTemporalWorkflowDispatcher{})
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "rev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleReviewer,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, map[string]any{"input": map[string]any{"query": "hi"}})
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden for reviewer executing agent, got %d", resp.StatusCode)
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "FORBIDDEN" {
+			t.Errorf("expected FORBIDDEN error code, got %s", errResp.Error.Code)
+		}
+	})
+
+	t.Run("3. authorized roles (super_admin, company_admin, agent_developer) are permitted", func(t *testing.T) {
+		allowedRoles := []struct {
+			name string
+			role auth.Role
+		}{
+			{"super_admin", auth.RoleSuperAdmin},
+			{"company_admin", auth.RoleCompanyAdmin},
+			{"agent_developer", auth.RoleAgentDeveloper},
+		}
+
+		for _, tc := range allowedRoles {
+			t.Run(tc.name, func(t *testing.T) {
+				regMock := &mockGatewayRegistryService{
+					getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+						return publishedVer, nil
+					},
+				}
+				tempMock := &mockTemporalWorkflowDispatcher{}
+				gw := createExecutionTestGateway(t, regMock, tempMock)
+				ts := httptest.NewServer(gw)
+				defer ts.Close()
+
+				id := auth.Identity{
+					UserID:   "user-" + tc.name,
+					TenantID: tenantID,
+					Role:     tc.role,
+				}
+				tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+				resp, body := doRequest(ts, "POST", path, tok, nil, map[string]any{"input": map[string]any{"query": "run"}})
+				if resp.StatusCode != http.StatusAccepted {
+					t.Fatalf("expected 202 Accepted for %s, got %d (body: %s)", tc.name, resp.StatusCode, string(body))
+				}
+			})
+		}
+	})
+
+	t.Run("4. authorized request resolves agent using JWT tenant", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return publishedVer, nil
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+
+		if regMock.lastSeenTenantID != tenantID {
+			t.Errorf("expected registry to receive tenant %s, got %s", tenantID, regMock.lastSeenTenantID)
+		}
+		if regMock.lastSeenAgentID != agentID {
+			t.Errorf("expected registry to receive agent %s, got %s", agentID, regMock.lastSeenAgentID)
+		}
+	})
+
+	t.Run("5. forged X-Tenant-ID header cannot override JWT tenant", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return publishedVer, nil
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		spoofedTenantID := uuid.New()
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		headers := map[string]string{
+			"X-Tenant-ID": spoofedTenantID.String(),
+		}
+		resp, body := doRequest(ts, "POST", path, tok, headers, nil)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+
+		if regMock.lastSeenTenantID != tenantID {
+			t.Fatalf("spoofing leak: registry received %s instead of trusted %s", regMock.lastSeenTenantID, tenantID)
+		}
+		if regMock.lastSeenTenantID == spoofedTenantID {
+			t.Fatalf("CRITICAL SECURITY FLAW: registry received spoofed tenant header!")
+		}
+	})
+
+	t.Run("6. missing agent returns 404 NOT_FOUND", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return nil, domain.NewNotFoundError("agent not found")
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found for missing agent, got %d", resp.StatusCode)
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "NOT_FOUND" {
+			t.Errorf("expected NOT_FOUND code, got %s", errResp.Error.Code)
+		}
+	})
+
+	t.Run("7. agent without published version is rejected with 404 NOT_FOUND", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return nil, domain.NewNotFoundError("no published version found for agent")
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found for agent with no published versions, got %d", resp.StatusCode)
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "NOT_FOUND" {
+			t.Errorf("expected NOT_FOUND code, got %s", errResp.Error.Code)
+		}
+	})
+
+	t.Run("8. workflow receives exact pinned version ID and execution input", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return publishedVer, nil
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		execInput := map[string]any{
+			"input": map[string]any{
+				"prompt":    "analyze portfolio risk",
+				"threshold": 0.95,
+			},
+		}
+		resp, body := doRequest(ts, "POST", path, tok, nil, execInput)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+
+		if tempMock.lastInput.TenantID != tenantID {
+			t.Errorf("expected workflow tenant %s, got %s", tenantID, tempMock.lastInput.TenantID)
+		}
+		if tempMock.lastInput.AgentID != agentID {
+			t.Errorf("expected workflow agent %s, got %s", agentID, tempMock.lastInput.AgentID)
+		}
+		if tempMock.lastInput.AgentVersionID != publishedVersionID {
+			t.Errorf("expected workflow pinned version %s, got %s", publishedVersionID, tempMock.lastInput.AgentVersionID)
+		}
+		if tempMock.lastInput.ExecutionInput["prompt"] != "analyze portfolio risk" {
+			t.Errorf("expected workflow execution input to contain prompt, got %+v", tempMock.lastInput.ExecutionInput)
+		}
+	})
+
+	t.Run("9. temporal dispatch failures produce 502 UPSTREAM_ERROR, not false success", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return publishedVer, nil
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{
+			startFn: func(ctx context.Context, workflowID string, input temporal.AgentExecutionInput) (client.WorkflowRun, error) {
+				return nil, errors.New("temporal server connection refused")
+			},
+		}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("expected 502 Bad Gateway for dispatch failure, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "UPSTREAM_ERROR" {
+			t.Errorf("expected UPSTREAM_ERROR code, got %s", errResp.Error.Code)
+		}
+	})
+
+	t.Run("10. successful dispatch returns actual workflow and run IDs", func(t *testing.T) {
+		expectedWfID := "agent-exec-custom-12345"
+		expectedRunID := "run-actual-98765"
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return publishedVer, nil
+			},
+		}
+		tempMock := &mockTemporalWorkflowDispatcher{
+			startFn: func(ctx context.Context, workflowID string, input temporal.AgentExecutionInput) (client.WorkflowRun, error) {
+				return &mockWorkflowRun{workflowID: expectedWfID, runID: expectedRunID}, nil
+			},
+		}
+		gw := createExecutionTestGateway(t, regMock, tempMock)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+
+		var execResp gatewayhttp.ExecuteAgentResponse
+		if err := json.Unmarshal(body, &execResp); err != nil {
+			t.Fatalf("failed to decode execution response: %v", err)
+		}
+
+		if execResp.WorkflowID != expectedWfID {
+			t.Errorf("expected workflow ID %s, got %s", expectedWfID, execResp.WorkflowID)
+		}
+		if execResp.RunID != expectedRunID {
+			t.Errorf("expected run ID %s, got %s", expectedRunID, execResp.RunID)
+		}
+		if execResp.AgentID != agentID {
+			t.Errorf("expected agent ID %s, got %s", agentID, execResp.AgentID)
+		}
+		if execResp.AgentVersionID != publishedVersionID {
+			t.Errorf("expected version ID %s, got %s", publishedVersionID, execResp.AgentVersionID)
+		}
+		if execResp.Status != "ACCEPTED" {
+			t.Errorf("expected status ACCEPTED, got %s", execResp.Status)
+		}
+	})
+
+	t.Run("11. invalid agent UUID returns 400 VALIDATION_FAILED", func(t *testing.T) {
+		gw := createExecutionTestGateway(t, &mockGatewayRegistryService{}, &mockTemporalWorkflowDispatcher{})
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", "/api/v1/agents/not-a-valid-uuid/execute", tok, nil, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request, got %d", resp.StatusCode)
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "VALIDATION_FAILED" {
+			t.Errorf("expected VALIDATION_FAILED code, got %s", errResp.Error.Code)
+		}
+	})
+
+	t.Run("12. invalid JSON body returns 400 VALIDATION_FAILED", func(t *testing.T) {
+		gw := createExecutionTestGateway(t, &mockGatewayRegistryService{}, &mockTemporalWorkflowDispatcher{})
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		req, _ := http.NewRequest("POST", ts.URL+path, bytes.NewReader([]byte("{invalid-json-body")))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for bad JSON, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("13. temporal client unconfigured returns 503 UPSTREAM_UNAVAILABLE", func(t *testing.T) {
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				return publishedVer, nil
+			},
+		}
+		// Pass nil TemporalClient
+		gw := createExecutionTestGateway(t, regMock, nil)
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		resp, body := doRequest(ts, "POST", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 Service Unavailable, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "UPSTREAM_UNAVAILABLE" {
+			t.Errorf("expected UPSTREAM_UNAVAILABLE code, got %s", errResp.Error.Code)
 		}
 	})
 }

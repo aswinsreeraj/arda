@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	temporalerr "go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
@@ -14,6 +15,9 @@ const (
 
 	// NoopActivityName is the canonical registered name of NoopActivity.
 	NoopActivityName = "NoopActivity"
+
+	// AgentExecutionWorkflowName is the canonical registered name of AgentExecutionWorkflow.
+	AgentExecutionWorkflowName = "AgentExecutionWorkflow"
 )
 
 // NoopWorkflowInput represents parameters passed when starting NoopWorkflow.
@@ -39,9 +43,9 @@ func NoopWorkflow(ctx workflow.Context, input NoopWorkflowInput) (NoopWorkflowRe
 		StartToCloseTimeout: 10 * time.Second,
 		RetryPolicy: &temporalerr.RetryPolicy{
 			InitialInterval:        time.Second,
-			BackoffCoefficient:    2.0,
-			MaximumInterval:       10 * time.Second,
-			MaximumAttempts:       3,
+			BackoffCoefficient:     2.0,
+			MaximumInterval:        10 * time.Second,
+			MaximumAttempts:        3,
 			NonRetryableErrorTypes: []string{"SimulatedActivityFailure"},
 		},
 	}
@@ -65,5 +69,47 @@ func NoopWorkflow(ctx workflow.Context, input NoopWorkflowInput) (NoopWorkflowRe
 		WorkflowID:     info.WorkflowExecution.ID,
 		RunID:          info.WorkflowExecution.RunID,
 		ActivityResult: actResult,
+	}, nil
+}
+
+// AgentExecutionInput represents parameters passed when starting AgentExecutionWorkflow.
+type AgentExecutionInput struct {
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	AgentID        uuid.UUID      `json:"agent_id"`
+	AgentVersionID uuid.UUID      `json:"agent_version_id"`
+	ExecutionInput map[string]any `json:"execution_input,omitempty"`
+}
+
+// AgentExecutionResult represents the output of AgentExecutionWorkflow.
+type AgentExecutionResult struct {
+	WorkflowID     string    `json:"workflow_id"`
+	RunID          string    `json:"run_id"`
+	TenantID       uuid.UUID `json:"tenant_id"`
+	AgentID        uuid.UUID `json:"agent_id"`
+	AgentVersionID uuid.UUID `json:"agent_version_id"`
+	Status         string    `json:"status"`
+}
+
+// AgentExecutionWorkflow is an execution workflow stub for ARDA v1.
+// NOTE: This is an explicit execution stub orchestrating tenant-scoped dispatch.
+// Full agent LLM/tool execution engine is scheduled for subsequent milestones.
+func AgentExecutionWorkflow(ctx workflow.Context, input AgentExecutionInput) (AgentExecutionResult, error) {
+	logger := workflow.GetLogger(ctx)
+	logger.Info("Starting AgentExecutionWorkflow (stub)",
+		"tenant_id", input.TenantID,
+		"agent_id", input.AgentID,
+		"agent_version_id", input.AgentVersionID,
+	)
+
+	info := workflow.GetInfo(ctx)
+	logger.Info("AgentExecutionWorkflow completed stub execution", "workflow_id", info.WorkflowExecution.ID)
+
+	return AgentExecutionResult{
+		WorkflowID:     info.WorkflowExecution.ID,
+		RunID:          info.WorkflowExecution.RunID,
+		TenantID:       input.TenantID,
+		AgentID:        input.AgentID,
+		AgentVersionID: input.AgentVersionID,
+		Status:         "COMPLETED_STUB",
 	}, nil
 }

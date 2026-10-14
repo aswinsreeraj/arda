@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
@@ -23,6 +24,9 @@ type Config struct {
 	RateLimitBurst         int
 	RateLimitEnabled       bool
 	ReliabilityServiceAddr string
+	TemporalAddr           string
+	TemporalNamespace      string
+	TemporalTaskQueue      string
 }
 
 // Server encapsulates the API Gateway HTTP server and dependencies.
@@ -31,6 +35,7 @@ type Server struct {
 	JWTValidator       *auth.TokenValidator
 	RateLimiter        *ratelimit.Limiter
 	ReliabilityService proxy.ReliabilityService
+	TemporalClient     *temporal.Client
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
@@ -66,20 +71,38 @@ func NewServer(cfg Config, db *sql.DB) (*Server, error) {
 		relSvc = relClient
 	}
 
+	// Optionally initialize Temporal client if upstream address is set
+	var tempClient *temporal.Client
+	if cfg.TemporalAddr != "" {
+		tc, err := temporal.NewClient(temporal.Config{
+			Address:   cfg.TemporalAddr,
+			Namespace: cfg.TemporalNamespace,
+			TaskQueue: cfg.TemporalTaskQueue,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize temporal client: %w", err)
+		}
+		tempClient = tc
+	}
+
 	// Mount Registry HTTP handlers if database connection is supplied.
 	// Uses ContextTenantResolver so tenant identity is derived exclusively
 	// from the cryptographically verified JWT context and never from headers.
 	var regHandler http.Handler
+	var regSvc gatewayhttp.RegistryService
 	if db != nil {
 		regServer := registry.NewServer(db, registryhttp.ContextTenantResolver{})
 		regHandler = regServer.Handler
+		regSvc = regServer.Service
 	}
 
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
 		RegistryHandler:    regHandler,
+		RegistryService:    regSvc,
 		ReliabilityService: relSvc,
+		TemporalClient:     tempClient,
 	})
 
 	return &Server{
@@ -87,5 +110,6 @@ func NewServer(cfg Config, db *sql.DB) (*Server, error) {
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
 		ReliabilityService: relSvc,
+		TemporalClient:     tempClient,
 	}, nil
 }

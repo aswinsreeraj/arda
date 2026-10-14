@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -139,5 +140,51 @@ func TestClient_UnavailableServerReportsError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error when temporal server is offline, got nil")
+	}
+}
+
+func TestAgentExecutionWorkflow_Success(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	env.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	input := temporal.AgentExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionInput: map[string]any{"query": "test query"},
+	}
+
+	env.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatalf("expected workflow to complete")
+	}
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("unexpected workflow error: %v", err)
+	}
+
+	var result temporal.AgentExecutionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("failed to decode workflow result: %v", err)
+	}
+
+	if result.TenantID != tenantID {
+		t.Errorf("expected tenant ID %s, got %s", tenantID, result.TenantID)
+	}
+	if result.AgentID != agentID {
+		t.Errorf("expected agent ID %s, got %s", agentID, result.AgentID)
+	}
+	if result.AgentVersionID != versionID {
+		t.Errorf("expected agent version ID %s, got %s", versionID, result.AgentVersionID)
+	}
+	if result.Status != "COMPLETED_STUB" {
+		t.Errorf("expected status COMPLETED_STUB, got %s", result.Status)
 	}
 }

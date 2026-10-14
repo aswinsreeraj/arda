@@ -44,6 +44,7 @@ func NewWorker(cfg Config, c client.Client) (*Worker, error) {
 
 	// Register workflows and activities
 	w.RegisterWorkflow(NoopWorkflow)
+	w.RegisterWorkflow(AgentExecutionWorkflow)
 	w.RegisterActivity(NoopActivity)
 
 	_ = ownsClient // retained for client lifecycle clarity

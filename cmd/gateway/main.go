@@ -71,6 +71,9 @@ func main() {
 		RateLimitBurst:         burst,
 		RateLimitEnabled:       true,
 		ReliabilityServiceAddr: os.Getenv("RELIABILITY_SERVICE_ADDR"),
+		TemporalAddr:           os.Getenv("TEMPORAL_ADDRESS"),
+		TemporalNamespace:      os.Getenv("TEMPORAL_NAMESPACE"),
+		TemporalTaskQueue:      os.Getenv("TEMPORAL_TASK_QUEUE"),
 	}
 
 	server, err := gateway.NewServer(cfg, db)
@@ -107,6 +110,9 @@ func main() {
 	}
 	if server.ReliabilityService != nil {
 		_ = server.ReliabilityService.Close()
+	}
+	if server.TemporalClient != nil {
+		server.TemporalClient.Close()
 	}
 	log.Println("API Gateway stopped cleanly.")
 }

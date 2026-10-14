@@ -6,13 +6,14 @@ import "fmt"
 type Action string
 
 const (
-	ActionAgentCreate       Action = "agent:create"
-	ActionAgentRead         Action = "agent:read"
-	ActionVersionCreate     Action = "version:create"
-	ActionVersionUpdate     Action = "version:update"
-	ActionVersionPublish    Action = "version:publish"
-	ActionVersionDelete     Action = "version:delete"
-	ActionReliabilityGate   Action = "reliability:gate"
+	ActionAgentCreate     Action = "agent:create"
+	ActionAgentRead       Action = "agent:read"
+	ActionAgentExecute    Action = "agent:execute"
+	ActionVersionCreate   Action = "version:create"
+	ActionVersionUpdate   Action = "version:update"
+	ActionVersionPublish  Action = "version:publish"
+	ActionVersionDelete   Action = "version:delete"
+	ActionReliabilityGate Action = "reliability:gate"
 )
 
 // Policy defines the authorization policy matrix across all ARDA roles.
@@ -20,6 +21,7 @@ var Policy = map[Role]map[Action]bool{
 	RoleSuperAdmin: {
 		ActionAgentCreate:     true,
 		ActionAgentRead:       true,
+		ActionAgentExecute:    true,
 		ActionVersionCreate:   true,
 		ActionVersionUpdate:   true,
 		ActionVersionPublish:  true,
@@ -29,6 +31,7 @@ var Policy = map[Role]map[Action]bool{
 	RoleCompanyAdmin: {
 		ActionAgentCreate:     true,
 		ActionAgentRead:       true,
+		ActionAgentExecute:    true,
 		ActionVersionCreate:   true,
 		ActionVersionUpdate:   true,
 		ActionVersionPublish:  true,
@@ -38,6 +41,7 @@ var Policy = map[Role]map[Action]bool{
 	RoleAgentDeveloper: {
 		ActionAgentCreate:     true,
 		ActionAgentRead:       true,
+		ActionAgentExecute:    true,
 		ActionVersionCreate:   true,
 		ActionVersionUpdate:   true,
 		ActionVersionPublish:  false, // Requires reviewer or admin approval
@@ -47,6 +51,7 @@ var Policy = map[Role]map[Action]bool{
 	RoleReviewer: {
 		ActionAgentCreate:     false,
 		ActionAgentRead:       true,
+		ActionAgentExecute:    false, // Reviewers evaluate and publish; they do not trigger operational executions
 		ActionVersionCreate:   false,
 		ActionVersionUpdate:   false,
 		ActionVersionPublish:  true, // Reviewers evaluate and publish

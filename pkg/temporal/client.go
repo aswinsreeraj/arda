@@ -75,6 +75,44 @@ func (c *Client) ExecuteNoopWorkflow(ctx context.Context, workflowID string, inp
 	return result, nil
 }
 
+// StartAgentExecutionWorkflow asynchronously dispatches AgentExecutionWorkflow with an explicit workflow ID.
+func (c *Client) StartAgentExecutionWorkflow(ctx context.Context, workflowID string, input AgentExecutionInput) (client.WorkflowRun, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("temporal client is not initialized")
+	}
+	wID := strings.TrimSpace(workflowID)
+	if wID == "" {
+		return nil, fmt.Errorf("workflow ID cannot be empty")
+	}
+
+	opts := client.StartWorkflowOptions{
+		ID:        wID,
+		TaskQueue: c.config.TaskQueue,
+	}
+
+	run, err := c.client.ExecuteWorkflow(ctx, opts, AgentExecutionWorkflow, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start agent execution workflow %s: %w", wID, err)
+	}
+
+	return run, nil
+}
+
+// ExecuteAgentWorkflow starts AgentExecutionWorkflow, waits synchronously for its completion, and returns the result.
+func (c *Client) ExecuteAgentWorkflow(ctx context.Context, workflowID string, input AgentExecutionInput) (AgentExecutionResult, error) {
+	run, err := c.StartAgentExecutionWorkflow(ctx, workflowID, input)
+	if err != nil {
+		return AgentExecutionResult{}, err
+	}
+
+	var result AgentExecutionResult
+	if err := run.Get(ctx, &result); err != nil {
+		return AgentExecutionResult{}, fmt.Errorf("workflow execution failed for %s: %w", workflowID, err)
+	}
+
+	return result, nil
+}
+
 // Close closes the underlying Temporal SDK client.
 func (c *Client) Close() {
 	if c.client != nil {
