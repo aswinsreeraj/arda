@@ -55,6 +55,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		wrapRoute(auth.ActionVersionPublish, "POST /api/v1/agents/{id}/versions/{versionId}/publish")
 		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}/versions/latest")
 		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}/versions/published/latest")
+		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}/versions/{versionId}")
 		wrapRoute(auth.ActionVersionUpdate, "PUT /api/v1/agents/{id}/versions/{versionId}")
 		wrapRoute(auth.ActionVersionDelete, "DELETE /api/v1/agents/{id}/versions/{versionId}")
 	}
@@ -86,10 +87,10 @@ type neighborResponse struct {
 }
 
 type gateResponseBody struct {
-	Confidence double               `json:"confidence"`
-	Outcome    string               `json:"outcome"`
-	ReasonCode string               `json:"reason_code"`
-	Neighbors  []neighborResponse   `json:"neighbors"`
+	Confidence double             `json:"confidence"`
+	Outcome    string             `json:"outcome"`
+	ReasonCode string             `json:"reason_code"`
+	Neighbors  []neighborResponse `json:"neighbors"`
 }
 
 type double = float64

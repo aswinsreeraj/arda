@@ -276,4 +276,64 @@ func TestAgentRegistry_Integration(t *testing.T) {
 			t.Errorf("v1 must remain published after v2 is published")
 		}
 	})
+
+	t.Run("tenant-scoped version lookup GET /api/v1/agents/{id}/versions/{versionId}", func(t *testing.T) {
+		// 1. Tenant A can retrieve its own version v1 (published)
+		resp, body := doRequest("GET", fmt.Sprintf("/api/v1/agents/%s/versions/%s", createdAgentID, draftV1ID), &tenantA, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected status 200, got %d; body: %s", resp.StatusCode, string(body))
+		}
+		var ver1 domain.AgentVersion
+		if err := json.Unmarshal(body, &ver1); err != nil {
+			t.Fatalf("failed to decode version: %v", err)
+		}
+		if ver1.ID != draftV1ID || ver1.VersionNumber != 1 || !ver1.Published {
+			t.Errorf("unexpected version returned: %+v", ver1)
+		}
+
+		// 2. Missing tenant header is rejected with 401
+		respNoAuth, _ := doRequest("GET", fmt.Sprintf("/api/v1/agents/%s/versions/%s", createdAgentID, draftV1ID), nil, nil)
+		if respNoAuth.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected status 401 for missing tenant, got %d", respNoAuth.StatusCode)
+		}
+
+		// 3. Invalid agent UUID or version UUID is rejected with 400
+		respBadAgent, _ := doRequest("GET", fmt.Sprintf("/api/v1/agents/not-a-uuid/versions/%s", draftV1ID), &tenantA, nil)
+		if respBadAgent.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected status 400 for bad agent uuid, got %d", respBadAgent.StatusCode)
+		}
+		respBadVer, _ := doRequest("GET", fmt.Sprintf("/api/v1/agents/%s/versions/not-a-uuid", createdAgentID), &tenantA, nil)
+		if respBadVer.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected status 400 for bad version uuid, got %d", respBadVer.StatusCode)
+		}
+
+		// 4. Nonexistent version returns 404 Not Found
+		respNonexistent, _ := doRequest("GET", fmt.Sprintf("/api/v1/agents/%s/versions/%s", createdAgentID, uuid.New()), &tenantA, nil)
+		if respNonexistent.StatusCode != http.StatusNotFound {
+			t.Errorf("expected status 404 for nonexistent version, got %d", respNonexistent.StatusCode)
+		}
+
+		// 5. Tenant B cannot retrieve Tenant A's agent version; returns 404 Not Found
+		respCrossTenant, _ := doRequest("GET", fmt.Sprintf("/api/v1/agents/%s/versions/%s", createdAgentID, draftV1ID), &tenantB, nil)
+		if respCrossTenant.StatusCode != http.StatusNotFound {
+			t.Errorf("expected status 404 for cross-tenant version lookup, got %d", respCrossTenant.StatusCode)
+		}
+
+		// 6. Version belonging to a different agent cannot be retrieved through another agent's URL
+		agent2Resp, agent2Body := doRequest("POST", "/api/v1/agents", &tenantA, service.CreateAgentRequest{
+			Name: "Tenant A Secondary Agent",
+		})
+		if agent2Resp.StatusCode != http.StatusCreated {
+			t.Fatalf("failed to create second agent: %v", string(agent2Body))
+		}
+		var agent2Detail domain.AgentDetail
+		if err := json.Unmarshal(agent2Body, &agent2Detail); err != nil {
+			t.Fatalf("failed to decode agent 2: %v", err)
+		}
+
+		respCrossAgent, _ := doRequest("GET", fmt.Sprintf("/api/v1/agents/%s/versions/%s", agent2Detail.Agent.ID, draftV1ID), &tenantA, nil)
+		if respCrossAgent.StatusCode != http.StatusNotFound {
+			t.Errorf("expected status 404 for version belonging to different agent, got %d", respCrossAgent.StatusCode)
+		}
+	})
 }

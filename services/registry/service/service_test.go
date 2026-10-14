@@ -10,13 +10,13 @@ import (
 )
 
 type mockStore struct {
-	agents          map[uuid.UUID]*domain.Agent
-	versions        map[uuid.UUID]*domain.AgentVersion
-	agentVersions   map[uuid.UUID][]*domain.AgentVersion
-	nextVersionNum  int
-	publishErr      error
-	createAgentErr  error
-	createVerErr    error
+	agents         map[uuid.UUID]*domain.Agent
+	versions       map[uuid.UUID]*domain.AgentVersion
+	agentVersions  map[uuid.UUID][]*domain.AgentVersion
+	nextVersionNum int
+	publishErr     error
+	createAgentErr error
+	createVerErr   error
 }
 
 func newMockStore() *mockStore {
@@ -306,4 +306,154 @@ func TestRegistryService_VersionLifecycleAndImmutability(t *testing.T) {
 	if !v1Check.Published {
 		t.Errorf("historical version v1 was modified; must remain published")
 	}
+}
+
+func TestRegistryService_GetVersion(t *testing.T) {
+	ctx := context.Background()
+	mock := newMockStore()
+	svc := NewRegistryService(mock)
+
+	tenantA := uuid.New()
+	tenantB := uuid.New()
+
+	agentA := &domain.Agent{
+		ID:       uuid.New(),
+		TenantID: tenantA,
+		Name:     "Agent A",
+	}
+	_ = mock.CreateAgent(ctx, agentA)
+
+	agentB := &domain.Agent{
+		ID:       uuid.New(),
+		TenantID: tenantB,
+		Name:     "Agent B",
+	}
+	_ = mock.CreateAgent(ctx, agentB)
+
+	cfg := domain.Configuration{
+		PromptTemplate:       "Prompt A",
+		Tools:                []string{"tool1"},
+		ReliabilityThreshold: 0.8,
+		ExecutionMode:        domain.ExecutionModeSupervised,
+	}
+
+	vA, err := svc.CreateDraftVersion(ctx, tenantA, agentA.ID, cfg)
+	if err != nil {
+		t.Fatalf("failed to create draft version: %v", err)
+	}
+
+	pubVA, err := svc.PublishVersion(ctx, tenantA, agentA.ID, vA.ID)
+	if err != nil {
+		t.Fatalf("failed to publish version: %v", err)
+	}
+
+	_, err = svc.CreateDraftVersion(ctx, tenantB, agentB.ID, cfg)
+	if err != nil {
+		t.Fatalf("failed to create draft version for tenant B: %v", err)
+	}
+
+	t.Run("tenant can retrieve its own agent version", func(t *testing.T) {
+		got, err := svc.GetVersion(ctx, tenantA, agentA.ID, pubVA.ID)
+		if err != nil {
+			t.Fatalf("unexpected error retrieving version: %v", err)
+		}
+		if got.ID != pubVA.ID {
+			t.Errorf("expected version ID %s, got %s", pubVA.ID, got.ID)
+		}
+		if got.AgentID != agentA.ID {
+			t.Errorf("expected agent ID %s, got %s", agentA.ID, got.AgentID)
+		}
+		if got.VersionNumber != pubVA.VersionNumber {
+			t.Errorf("expected version number %d, got %d", pubVA.VersionNumber, got.VersionNumber)
+		}
+		if !got.Published {
+			t.Errorf("expected retrieved version to be published")
+		}
+	})
+
+	t.Run("missing tenant ID is rejected", func(t *testing.T) {
+		_, err := svc.GetVersion(ctx, uuid.Nil, agentA.ID, pubVA.ID)
+		if err == nil {
+			t.Fatalf("expected error with nil tenant ID, got nil")
+		}
+		domErr, ok := err.(*domain.DomainError)
+		if !ok || domErr.Code != domain.CodeUnauthenticated {
+			t.Errorf("expected UNAUTHENTICATED error, got %v", err)
+		}
+	})
+
+	t.Run("invalid agent UUID or version UUID is rejected", func(t *testing.T) {
+		_, err := svc.GetVersion(ctx, tenantA, uuid.Nil, pubVA.ID)
+		if err == nil {
+			t.Fatalf("expected error with nil agent ID, got nil")
+		}
+		domErr, ok := err.(*domain.DomainError)
+		if !ok || domErr.Code != domain.CodeValidationFailed {
+			t.Errorf("expected VALIDATION_FAILED error, got %v", err)
+		}
+
+		_, err2 := svc.GetVersion(ctx, tenantA, agentA.ID, uuid.Nil)
+		if err2 == nil {
+			t.Fatalf("expected error with nil version ID, got nil")
+		}
+		domErr2, ok := err2.(*domain.DomainError)
+		if !ok || domErr2.Code != domain.CodeValidationFailed {
+			t.Errorf("expected VALIDATION_FAILED error, got %v", err2)
+		}
+	})
+
+	t.Run("nonexistent version returns not found error", func(t *testing.T) {
+		_, err := svc.GetVersion(ctx, tenantA, agentA.ID, uuid.New())
+		if err == nil {
+			t.Fatalf("expected error for nonexistent version, got nil")
+		}
+		domErr, ok := err.(*domain.DomainError)
+		if !ok || domErr.Code != domain.CodeNotFound {
+			t.Errorf("expected NOT_FOUND error, got %v", err)
+		}
+	})
+
+	t.Run("tenant cannot retrieve another tenant's agent version", func(t *testing.T) {
+		// Tenant B attempts to retrieve Tenant A's agent version
+		_, err := svc.GetVersion(ctx, tenantB, agentA.ID, pubVA.ID)
+		if err == nil {
+			t.Fatalf("expected NOT_FOUND when tenant B queries tenant A's agent version, got nil")
+		}
+		domErr, ok := err.(*domain.DomainError)
+		if !ok || domErr.Code != domain.CodeNotFound {
+			t.Errorf("expected NOT_FOUND error to avoid leaking existence, got %v", err)
+		}
+	})
+
+	t.Run("version belonging to different agent cannot be retrieved through requested agent's URL", func(t *testing.T) {
+		// Even if tenant owns an agent, querying version belonging to different agent returns NOT_FOUND
+		agentA2 := &domain.Agent{
+			ID:       uuid.New(),
+			TenantID: tenantA,
+			Name:     "Agent A2",
+		}
+		_ = mock.CreateAgent(ctx, agentA2)
+
+		_, err := svc.GetVersion(ctx, tenantA, agentA2.ID, pubVA.ID)
+		if err == nil {
+			t.Fatalf("expected NOT_FOUND when querying version belonging to different agent, got nil")
+		}
+		domErr, ok := err.(*domain.DomainError)
+		if !ok || domErr.Code != domain.CodeNotFound {
+			t.Errorf("expected NOT_FOUND error, got %v", err)
+		}
+	})
+
+	t.Run("published version is returned unchanged", func(t *testing.T) {
+		got, err := svc.GetVersion(ctx, tenantA, agentA.ID, pubVA.ID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got.Published {
+			t.Errorf("published version changed to draft")
+		}
+		if got.Configuration.PromptTemplate != "Prompt A" {
+			t.Errorf("configuration modified")
+		}
+	})
 }

@@ -86,12 +86,12 @@ func (h *Handler) CreateVersionHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Configuration *domain.Configuration `json:"configuration"`
 		// Flat fields
-		PromptTemplate       string                `json:"prompt_template"`
-		Tools                []string              `json:"tools"`
-		ReliabilityThreshold *float64              `json:"reliability_threshold"`
-		ExecutionMode        domain.ExecutionMode  `json:"execution_mode"`
-		Guardrails           map[string]any        `json:"guardrails"`
-		Budgets              map[string]any        `json:"budgets"`
+		PromptTemplate       string               `json:"prompt_template"`
+		Tools                []string             `json:"tools"`
+		ReliabilityThreshold *float64             `json:"reliability_threshold"`
+		ExecutionMode        domain.ExecutionMode `json:"execution_mode"`
+		Guardrails           map[string]any       `json:"guardrails"`
+		Budgets              map[string]any       `json:"budgets"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -181,6 +181,37 @@ func (h *Handler) GetLatestPublishedVersionHandler(w http.ResponseWriter, r *htt
 	}
 
 	version, err := h.svc.GetLatestPublishedVersion(r.Context(), tenantID, agentID)
+	if err != nil {
+		writeErrorResponse(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, version)
+}
+
+// GetVersionHandler handles GET /api/v1/agents/{id}/versions/{versionId}
+func (h *Handler) GetVersionHandler(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := TenantIDFromContext(r.Context())
+	if !ok {
+		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		return
+	}
+
+	agentIDStr := r.PathValue("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		return
+	}
+
+	versionIDStr := r.PathValue("versionId")
+	versionID, err := uuid.Parse(versionIDStr)
+	if err != nil {
+		writeErrorResponse(w, domain.NewValidationError("invalid version id: must be a valid uuid"))
+		return
+	}
+
+	version, err := h.svc.GetVersion(r.Context(), tenantID, agentID, versionID)
 	if err != nil {
 		writeErrorResponse(w, err)
 		return

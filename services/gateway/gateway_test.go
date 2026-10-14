@@ -612,3 +612,93 @@ func TestGateway_RegistryContextTenantResolver(t *testing.T) {
 		}
 	})
 }
+
+// 10. Gateway tenant-scoped agent version lookup endpoint GET /api/v1/agents/{id}/versions/{versionId}
+func TestGateway_GetAgentVersionEndpoint(t *testing.T) {
+	mockReg := &mockRegistryHandler{}
+	gw, _ := createTestGateway(t, mockReg, nil, nil)
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+	path := fmt.Sprintf("/api/v1/agents/%s/versions/%s", agentID, versionID)
+
+	t.Run("unauthenticated request returns 401 UNAUTHENTICATED", func(t *testing.T) {
+		resp, body := doRequest(ts, "GET", path, "", nil, nil)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+		errResp := parseErrorResponse(t, body)
+		if errResp.Error.Code != "UNAUTHENTICATED" {
+			t.Errorf("expected UNAUTHENTICATED error code, got %s", errResp.Error.Code)
+		}
+	})
+
+	roles := []struct {
+		name string
+		role auth.Role
+	}{
+		{"super_admin", auth.RoleSuperAdmin},
+		{"company_admin", auth.RoleCompanyAdmin},
+		{"agent_developer", auth.RoleAgentDeveloper},
+		{"reviewer", auth.RoleReviewer},
+	}
+
+	for _, tc := range roles {
+		t.Run(fmt.Sprintf("role %s is authorized to read agent version", tc.name), func(t *testing.T) {
+			mockReg.lastSeenTenantID = uuid.Nil
+			id := auth.Identity{
+				UserID:   "user-" + tc.name,
+				TenantID: tenantID,
+				Role:     tc.role,
+			}
+			tok, err := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+			if err != nil {
+				t.Fatalf("failed to generate token: %v", err)
+			}
+
+			resp, body := doRequest(ts, "GET", path, tok, nil, nil)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected 200 OK for %s, got %d (body: %s)", tc.name, resp.StatusCode, string(body))
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("failed to parse json response: %v", err)
+			}
+			if payload["status"] != "handled" || payload["tenant_id"] != tenantID.String() {
+				t.Errorf("expected response handled with tenant %s, got %+v", tenantID, payload)
+			}
+			if mockReg.lastSeenTenantID != tenantID {
+				t.Errorf("expected downstream to receive tenant %s, got %s", tenantID, mockReg.lastSeenTenantID)
+			}
+		})
+	}
+
+	t.Run("spoofed X-Tenant-ID header is ignored and trusted JWT tenant is preserved", func(t *testing.T) {
+		mockReg.lastSeenTenantID = uuid.Nil
+		spoofedID := uuid.New()
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		headers := map[string]string{
+			"X-Tenant-ID": spoofedID.String(),
+		}
+		resp, body := doRequest(ts, "GET", path, tok, headers, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d (body: %s)", resp.StatusCode, string(body))
+		}
+		if mockReg.lastSeenTenantID != tenantID {
+			t.Fatalf("expected downstream to receive trusted tenant %s, got %s", tenantID, mockReg.lastSeenTenantID)
+		}
+		if mockReg.lastSeenTenantID == spoofedID {
+			t.Fatalf("CRITICAL SECURITY FLAW: downstream accepted spoofed X-Tenant-ID!")
+		}
+	})
+}

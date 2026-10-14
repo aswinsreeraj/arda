@@ -25,6 +25,7 @@ func RegisterRoutes(h *Handler, resolver TenantResolver) http.Handler {
 	apiMux.HandleFunc("POST /api/v1/agents/{id}/versions/{versionId}/publish", h.PublishVersionHandler)
 	apiMux.HandleFunc("GET /api/v1/agents/{id}/versions/latest", h.GetLatestPublishedVersionHandler)
 	apiMux.HandleFunc("GET /api/v1/agents/{id}/versions/published/latest", h.GetLatestPublishedVersionHandler)
+	apiMux.HandleFunc("GET /api/v1/agents/{id}/versions/{versionId}", h.GetVersionHandler)
 	apiMux.HandleFunc("PUT /api/v1/agents/{id}/versions/{versionId}", h.UpdateVersionHandler)
 	apiMux.HandleFunc("DELETE /api/v1/agents/{id}/versions/{versionId}", h.DeleteVersionHandler)
 

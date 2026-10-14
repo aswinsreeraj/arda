@@ -15,12 +15,12 @@ type CreateAgentRequest struct {
 	Configuration *domain.Configuration `json:"configuration,omitempty"`
 
 	// Flat configuration fields for compatibility with direct creation payloads
-	PromptTemplate       string                `json:"prompt_template,omitempty"`
-	Tools                []string              `json:"tools,omitempty"`
-	ReliabilityThreshold *float64              `json:"reliability_threshold,omitempty"`
-	ExecutionMode        domain.ExecutionMode  `json:"execution_mode,omitempty"`
-	Guardrails           map[string]any        `json:"guardrails,omitempty"`
-	Budgets              map[string]any        `json:"budgets,omitempty"`
+	PromptTemplate       string               `json:"prompt_template,omitempty"`
+	Tools                []string             `json:"tools,omitempty"`
+	ReliabilityThreshold *float64             `json:"reliability_threshold,omitempty"`
+	ExecutionMode        domain.ExecutionMode `json:"execution_mode,omitempty"`
+	Guardrails           map[string]any       `json:"guardrails,omitempty"`
+	Budgets              map[string]any       `json:"budgets,omitempty"`
 }
 
 // ExtractConfiguration merges nested or flat configuration fields from the request.
@@ -215,6 +215,23 @@ func (s *RegistryService) GetLatestPublishedVersion(ctx context.Context, tenantI
 	}
 
 	return s.store.GetLatestPublishedVersion(ctx, agentID)
+}
+
+// GetVersion retrieves a specific agent version by ID, verifying tenant ownership of the agent.
+func (s *RegistryService) GetVersion(ctx context.Context, tenantID, agentID, versionID uuid.UUID) (*domain.AgentVersion, error) {
+	if tenantID == uuid.Nil {
+		return nil, domain.NewUnauthenticatedError("missing or invalid tenant identity")
+	}
+	if agentID == uuid.Nil || versionID == uuid.Nil {
+		return nil, domain.NewValidationError("invalid agent id or version id")
+	}
+
+	// Enforce tenant ownership of the agent
+	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
+		return nil, err
+	}
+
+	return s.store.GetVersion(ctx, agentID, versionID)
 }
 
 // UpdateDraftVersion updates a draft version's configuration. Rejects modification if version is published.
