@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aswinsreeraj/arda/pkg/database"
 	"github.com/aswinsreeraj/arda/services/gateway"
-	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -51,14 +50,9 @@ func main() {
 		}
 	}
 
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://arda_user:arda_password@127.0.0.1:5432/arda?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
+	db, err := database.Connect(database.LoadConfigFromEnv())
 	if err != nil {
-		log.Fatalf("Failed to open database connection: %v", err)
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
@@ -76,7 +70,7 @@ func main() {
 		TemporalTaskQueue:      os.Getenv("TEMPORAL_TASK_QUEUE"),
 	}
 
-	server, err := gateway.NewServer(cfg, db)
+	server, err := gateway.NewServer(cfg, db.DB)
 	if err != nil {
 		log.Fatalf("Failed to initialize API Gateway: %v", err)
 	}

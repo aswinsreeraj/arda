@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,40 +10,28 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aswinsreeraj/arda/pkg/database"
 	"github.com/aswinsreeraj/arda/services/registry"
-	_ "github.com/lib/pq"
 )
 
 func main() {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://arda_user:arda_password@127.0.0.1:5432/arda?sslmode=disable"
-	}
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	db, err := sql.Open("postgres", dbURL)
+	db, err := database.Connect(database.LoadConfigFromEnv())
 	if err != nil {
-		log.Fatalf("Failed to open database connection: %v", err)
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
-
-	// Verify database connectivity
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		log.Fatalf("Failed to ping database: %v", err)
-	}
 
 	// SECURITY NOTE: The standalone Agent Registry defaults to HeaderTenantResolver (when resolver is nil),
 	// which trusts the client-supplied X-Tenant-ID header directly without cryptographic verification.
 	// This mode is intended strictly for standalone local development and automated store tests.
 	// In production, the Registry must run in-process behind the API Gateway using ContextTenantResolver.
 	// To prevent unauthorized external access, this standalone listener must remain bound to loopback (127.0.0.1).
-	server := registry.NewServer(db, nil)
+	server := registry.NewServer(db.DB, nil)
 	addr := fmt.Sprintf("127.0.0.1:%s", port)
 	httpServer := &http.Server{
 		Addr:         addr,

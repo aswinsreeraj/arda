@@ -1,9 +1,10 @@
 package gateway
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
+
+	"gorm.io/gorm"
 
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
@@ -39,7 +40,7 @@ type Server struct {
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
-func NewServer(cfg Config, db *sql.DB) (*Server, error) {
+func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	// Fails closed if JWT configuration is missing or invalid
 	jwtValidator, err := auth.NewTokenValidator(auth.JWTConfig{
 		Secret:   cfg.JWTSecret,

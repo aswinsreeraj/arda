@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,6 +35,38 @@ type Configuration struct {
 	ExecutionMode        ExecutionMode  `json:"execution_mode"`
 	Guardrails           map[string]any `json:"guardrails,omitempty"`
 	Budgets              map[string]any `json:"budgets,omitempty"`
+}
+
+// Value implements driver.Valuer for database JSONB serialization.
+func (c Configuration) Value() (driver.Value, error) {
+	if c.Tools == nil {
+		c.Tools = []string{}
+	}
+	return json.Marshal(c)
+}
+
+// Scan implements sql.Scanner for database JSONB deserialization.
+func (c *Configuration) Scan(value any) error {
+	if value == nil {
+		*c = Configuration{Tools: []string{}}
+		return nil
+	}
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
+		return fmt.Errorf("failed to unmarshal JSONB value: expected []byte or string, got %T", value)
+	}
+	if err := json.Unmarshal(bytes, c); err != nil {
+		return err
+	}
+	if c.Tools == nil {
+		c.Tools = []string{}
+	}
+	return nil
 }
 
 // Agent represents an agent owned by a tenant.

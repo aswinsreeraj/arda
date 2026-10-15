@@ -2,41 +2,33 @@ package registry_test
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
+	"github.com/aswinsreeraj/arda/pkg/database"
 	"github.com/aswinsreeraj/arda/services/registry"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 	registryhttp "github.com/aswinsreeraj/arda/services/registry/http"
 	"github.com/aswinsreeraj/arda/services/registry/service"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
 )
 
-func getTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://arda_user:arda_password@127.0.0.1:5432/arda?sslmode=disable"
-	}
-	db, err := sql.Open("postgres", dbURL)
+func getTestDB(t *testing.T) *database.DB {
+	cfg := database.LoadConfigFromEnv()
+	db, err := database.Connect(cfg)
 	if err != nil {
-		t.Skipf("skipping integration test: cannot open database: %v", err)
-	}
-	if err := db.Ping(); err != nil {
-		t.Skipf("skipping integration test: database ping failed: %v", err)
+		t.Skipf("skipping integration test: database connection failed: %v", err)
 	}
 	return db
 }
 
-func createTestTenant(t *testing.T, db *sql.DB, name string) uuid.UUID {
+func createTestTenant(t *testing.T, db *database.DB, name string) uuid.UUID {
 	id := uuid.New()
-	query := `INSERT INTO tenants (id, name, status) VALUES ($1, $2, 'active')`
-	if _, err := db.Exec(query, id, name); err != nil {
+	query := `INSERT INTO tenants (id, name, status) VALUES (?, ?, 'active')`
+	if err := db.Exec(query, id, name).Error; err != nil {
 		t.Fatalf("failed to create test tenant: %v", err)
 	}
 	return id
@@ -49,7 +41,7 @@ func TestAgentRegistry_Integration(t *testing.T) {
 	tenantA := createTestTenant(t, db, fmt.Sprintf("Tenant A %s", uuid.New().String()[:8]))
 	tenantB := createTestTenant(t, db, fmt.Sprintf("Tenant B %s", uuid.New().String()[:8]))
 
-	server := registry.NewServer(db, nil)
+	server := registry.NewServer(db.DB, nil)
 	ts := httptest.NewServer(server.Handler)
 	defer ts.Close()
 
@@ -268,7 +260,7 @@ func TestAgentRegistry_Integration(t *testing.T) {
 
 		// Verify v1 in database is still published and not overwritten
 		var v1Published bool
-		err := db.QueryRow("SELECT published FROM agent_versions WHERE id = $1", draftV1ID).Scan(&v1Published)
+		err := db.Raw("SELECT published FROM agent_versions WHERE id = ?", draftV1ID).Scan(&v1Published).Error
 		if err != nil {
 			t.Fatalf("failed to query v1: %v", err)
 		}
