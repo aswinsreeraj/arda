@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/aswinsreeraj/arda/services/registry/domain"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -66,14 +67,15 @@ func (h HeaderTenantResolver) ResolveTenant(r *http.Request) (uuid.UUID, error) 
 }
 
 // TenantMiddleware enforces that every request contains a valid tenant identity in context.
-func TenantMiddleware(resolver TenantResolver, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tenantID, err := resolver.ResolveTenant(r)
+func TenantMiddleware(resolver TenantResolver) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID, err := resolver.ResolveTenant(c.Request)
 		if err != nil {
-			writeErrorResponse(w, err)
+			writeErrorResponse(c, err)
 			return
 		}
-		ctx := WithTenantID(r.Context(), tenantID)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+		ctx := WithTenantID(c.Request.Context(), tenantID)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
 }

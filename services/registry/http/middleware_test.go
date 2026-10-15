@@ -8,8 +8,13 @@ import (
 
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 	registryhttp "github.com/aswinsreeraj/arda/services/registry/http"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
 
 type errorResponsePayload struct {
 	Error domain.DomainError `json:"error"`
@@ -82,20 +87,20 @@ func TestTenantMiddleware_WithContextResolver(t *testing.T) {
 
 	t.Run("middleware propagates context tenant to downstream handler without header", func(t *testing.T) {
 		var capturedTenantID uuid.UUID
-		innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if id, ok := registryhttp.TenantIDFromContext(r.Context()); ok {
+		router := gin.New()
+		router.Use(registryhttp.TenantMiddleware(resolver))
+		router.GET("/test", func(c *gin.Context) {
+			if id, ok := registryhttp.TenantIDFromContext(c.Request.Context()); ok {
 				capturedTenantID = id
 			}
-			w.WriteHeader(http.StatusOK)
+			c.Status(http.StatusOK)
 		})
-
-		middleware := registryhttp.TenantMiddleware(resolver, innerHandler)
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req = req.WithContext(registryhttp.WithTenantID(req.Context(), legitTenantID))
 		rec := httptest.NewRecorder()
 
-		middleware.ServeHTTP(rec, req)
+		router.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected HTTP 200, got %d", rec.Code)
@@ -107,16 +112,17 @@ func TestTenantMiddleware_WithContextResolver(t *testing.T) {
 
 	t.Run("middleware returns 401 unauthenticated when context is absent", func(t *testing.T) {
 		innerCalled := false
-		innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		router := gin.New()
+		router.Use(registryhttp.TenantMiddleware(resolver))
+		router.GET("/test", func(c *gin.Context) {
 			innerCalled = true
+			c.Status(http.StatusOK)
 		})
-
-		middleware := registryhttp.TenantMiddleware(resolver, innerHandler)
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		rec := httptest.NewRecorder()
 
-		middleware.ServeHTTP(rec, req)
+		router.ServeHTTP(rec, req)
 
 		if innerCalled {
 			t.Fatalf("inner handler should not have been called without tenant context")
@@ -136,21 +142,21 @@ func TestTenantMiddleware_WithContextResolver(t *testing.T) {
 
 	t.Run("middleware ignores forged X-Tenant-ID and uses trusted context", func(t *testing.T) {
 		var capturedTenantID uuid.UUID
-		innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if id, ok := registryhttp.TenantIDFromContext(r.Context()); ok {
+		router := gin.New()
+		router.Use(registryhttp.TenantMiddleware(resolver))
+		router.GET("/test", func(c *gin.Context) {
+			if id, ok := registryhttp.TenantIDFromContext(c.Request.Context()); ok {
 				capturedTenantID = id
 			}
-			w.WriteHeader(http.StatusOK)
+			c.Status(http.StatusOK)
 		})
-
-		middleware := registryhttp.TenantMiddleware(resolver, innerHandler)
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("X-Tenant-ID", spoofedTenantID.String())
 		req = req.WithContext(registryhttp.WithTenantID(req.Context(), legitTenantID))
 		rec := httptest.NewRecorder()
 
-		middleware.ServeHTTP(rec, req)
+		router.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected HTTP 200, got %d", rec.Code)

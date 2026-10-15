@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
+	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 )
 
@@ -95,17 +96,20 @@ func KeyForRequest(r *http.Request) string {
 	return "ip:" + host
 }
 
-// Middleware creates an HTTP middleware that enforces rate limiting.
-func Middleware(limiter *Limiter, writeErr func(w http.ResponseWriter, status int, code, message string)) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := KeyForRequest(r)
-			if !limiter.Allow(key) {
-				w.Header().Set("Retry-After", "1")
-				writeErr(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded, please retry later")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
+// Middleware creates a Gin middleware that enforces rate limiting.
+func Middleware(limiter *Limiter, writeErr func(w http.ResponseWriter, status int, code, message string)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if limiter == nil {
+			c.Next()
+			return
+		}
+		key := KeyForRequest(c.Request)
+		if !limiter.Allow(key) {
+			c.Header("Retry-After", "1")
+			c.Abort()
+			writeErr(c.Writer, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded, please retry later")
+			return
+		}
+		c.Next()
 	}
 }

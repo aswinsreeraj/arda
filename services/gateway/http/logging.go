@@ -3,11 +3,11 @@ package http
 import (
 	"context"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -29,36 +29,22 @@ func RequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-type statusRecorder struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (r *statusRecorder) WriteHeader(code int) {
-	r.statusCode = code
-	r.ResponseWriter.WriteHeader(code)
-}
-
 // LoggingMiddleware logs request metadata without leaking credentials or tokens.
-func LoggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqID := strings.TrimSpace(r.Header.Get(RequestIDHeader))
+func LoggingMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		reqID := strings.TrimSpace(c.GetHeader(RequestIDHeader))
 		if reqID == "" {
 			reqID = uuid.New().String()
 		}
 
 		tracker := &auth.IdentityTracker{}
-		ctx := WithRequestID(r.Context(), reqID)
+		ctx := WithRequestID(c.Request.Context(), reqID)
 		ctx = context.WithValue(ctx, auth.TrackerContextKey, tracker)
-		w.Header().Set(RequestIDHeader, reqID)
-
-		rec := &statusRecorder{
-			ResponseWriter: w,
-			statusCode:     http.StatusOK,
-		}
+		c.Request = c.Request.WithContext(ctx)
+		c.Header(RequestIDHeader, reqID)
 
 		start := time.Now()
-		next.ServeHTTP(rec, r.WithContext(ctx))
+		c.Next()
 		duration := time.Since(start)
 
 		tenantIDStr := "-"
@@ -68,7 +54,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			tenantIDStr = tracker.Identity.TenantID.String()
 			userIDStr = tracker.Identity.UserID
 			roleStr = string(tracker.Identity.Role)
-		} else if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+		} else if identity, ok := auth.IdentityFromContext(c.Request.Context()); ok {
 			tenantIDStr = identity.TenantID.String()
 			userIDStr = identity.UserID
 			roleStr = string(identity.Role)
@@ -76,13 +62,13 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 
 		log.Printf("[GATEWAY] req_id=%s method=%s path=%s status=%d duration_ms=%d tenant_id=%s user_id=%s role=%s",
 			reqID,
-			r.Method,
-			r.URL.Path,
-			rec.statusCode,
+			c.Request.Method,
+			c.Request.URL.Path,
+			c.Writer.Status(),
 			duration.Milliseconds(),
 			tenantIDStr,
 			userIDStr,
 			roleStr,
 		)
-	})
+	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 	"github.com/aswinsreeraj/arda/services/registry/service"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -21,64 +22,64 @@ func NewHandler(svc *service.RegistryService) *Handler {
 }
 
 // CreateAgentHandler handles POST /api/v1/agents
-func (h *Handler) CreateAgentHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+func (h *Handler) CreateAgentHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
 	var req service.CreateAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid json request body", err.Error()))
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		writeErrorResponse(c, domain.NewValidationError("invalid json request body", err.Error()))
 		return
 	}
 
-	detail, err := h.svc.CreateAgent(r.Context(), tenantID, req)
+	detail, err := h.svc.CreateAgent(c.Request.Context(), tenantID, req)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, detail)
+	writeJSON(c, http.StatusCreated, detail)
 }
 
-// GetAgentHandler handles GET /api/v1/agents/{id}
-func (h *Handler) GetAgentHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+// GetAgentHandler handles GET /api/v1/agents/:id
+func (h *Handler) GetAgentHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	idStr := r.PathValue("id")
+	idStr := c.Param("id")
 	agentID, err := uuid.Parse(idStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
-	detail, err := h.svc.GetAgent(r.Context(), tenantID, agentID)
+	detail, err := h.svc.GetAgent(c.Request.Context(), tenantID, agentID)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, detail)
+	writeJSON(c, http.StatusOK, detail)
 }
 
-// CreateVersionHandler handles POST /api/v1/agents/{id}/versions
-func (h *Handler) CreateVersionHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+// CreateVersionHandler handles POST /api/v1/agents/:id/versions
+func (h *Handler) CreateVersionHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	idStr := r.PathValue("id")
+	idStr := c.Param("id")
 	agentID, err := uuid.Parse(idStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
@@ -94,8 +95,8 @@ func (h *Handler) CreateVersionHandler(w http.ResponseWriter, r *http.Request) {
 		Budgets              map[string]any       `json:"budgets"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid json request body", err.Error()))
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		writeErrorResponse(c, domain.NewValidationError("invalid json request body", err.Error()))
 		return
 	}
 
@@ -125,168 +126,168 @@ func (h *Handler) CreateVersionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	version, err := h.svc.CreateDraftVersion(r.Context(), tenantID, agentID, cfg)
+	version, err := h.svc.CreateDraftVersion(c.Request.Context(), tenantID, agentID, cfg)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, version)
+	writeJSON(c, http.StatusCreated, version)
 }
 
-// PublishVersionHandler handles POST /api/v1/agents/{id}/versions/{versionId}/publish
-func (h *Handler) PublishVersionHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+// PublishVersionHandler handles POST /api/v1/agents/:id/versions/:versionId/publish
+func (h *Handler) PublishVersionHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	agentIDStr := r.PathValue("id")
+	agentIDStr := c.Param("id")
 	agentID, err := uuid.Parse(agentIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
-	versionIDStr := r.PathValue("versionId")
+	versionIDStr := c.Param("versionId")
 	versionID, err := uuid.Parse(versionIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid version id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid version id: must be a valid uuid"))
 		return
 	}
 
-	version, err := h.svc.PublishVersion(r.Context(), tenantID, agentID, versionID)
+	version, err := h.svc.PublishVersion(c.Request.Context(), tenantID, agentID, versionID)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, version)
+	writeJSON(c, http.StatusOK, version)
 }
 
-// GetLatestPublishedVersionHandler handles GET /api/v1/agents/{id}/versions/latest
-func (h *Handler) GetLatestPublishedVersionHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+// GetLatestPublishedVersionHandler handles GET /api/v1/agents/:id/versions/latest
+func (h *Handler) GetLatestPublishedVersionHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	agentIDStr := r.PathValue("id")
+	agentIDStr := c.Param("id")
 	agentID, err := uuid.Parse(agentIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
-	version, err := h.svc.GetLatestPublishedVersion(r.Context(), tenantID, agentID)
+	version, err := h.svc.GetLatestPublishedVersion(c.Request.Context(), tenantID, agentID)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, version)
+	writeJSON(c, http.StatusOK, version)
 }
 
-// GetVersionHandler handles GET /api/v1/agents/{id}/versions/{versionId}
-func (h *Handler) GetVersionHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+// GetVersionHandler handles GET /api/v1/agents/:id/versions/:versionId
+func (h *Handler) GetVersionHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	agentIDStr := r.PathValue("id")
+	agentIDStr := c.Param("id")
 	agentID, err := uuid.Parse(agentIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
-	versionIDStr := r.PathValue("versionId")
+	versionIDStr := c.Param("versionId")
 	versionID, err := uuid.Parse(versionIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid version id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid version id: must be a valid uuid"))
 		return
 	}
 
-	version, err := h.svc.GetVersion(r.Context(), tenantID, agentID, versionID)
+	version, err := h.svc.GetVersion(c.Request.Context(), tenantID, agentID, versionID)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, version)
+	writeJSON(c, http.StatusOK, version)
 }
 
-// UpdateVersionHandler handles PUT /api/v1/agents/{id}/versions/{versionId}
+// UpdateVersionHandler handles PUT /api/v1/agents/:id/versions/:versionId
 // Rejects modification if the version is published.
-func (h *Handler) UpdateVersionHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+func (h *Handler) UpdateVersionHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	agentIDStr := r.PathValue("id")
+	agentIDStr := c.Param("id")
 	agentID, err := uuid.Parse(agentIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
-	versionIDStr := r.PathValue("versionId")
+	versionIDStr := c.Param("versionId")
 	versionID, err := uuid.Parse(versionIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid version id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid version id: must be a valid uuid"))
 		return
 	}
 
 	var cfg domain.Configuration
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid json request body", err.Error()))
+	if err := json.NewDecoder(c.Request.Body).Decode(&cfg); err != nil {
+		writeErrorResponse(c, domain.NewValidationError("invalid json request body", err.Error()))
 		return
 	}
 
-	ver, err := h.svc.UpdateDraftVersion(r.Context(), tenantID, agentID, versionID, cfg)
+	ver, err := h.svc.UpdateDraftVersion(c.Request.Context(), tenantID, agentID, versionID, cfg)
 	if err != nil {
-		writeErrorResponse(w, err)
+		writeErrorResponse(c, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, ver)
+	writeJSON(c, http.StatusOK, ver)
 }
 
-// DeleteVersionHandler handles DELETE /api/v1/agents/{id}/versions/{versionId}
+// DeleteVersionHandler handles DELETE /api/v1/agents/:id/versions/:versionId
 // Rejects deletion if the version is published.
-func (h *Handler) DeleteVersionHandler(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := TenantIDFromContext(r.Context())
+func (h *Handler) DeleteVersionHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
 	if !ok {
-		writeErrorResponse(w, domain.NewUnauthenticatedError("missing tenant context"))
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
 		return
 	}
 
-	agentIDStr := r.PathValue("id")
+	agentIDStr := c.Param("id")
 	agentID, err := uuid.Parse(agentIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
 		return
 	}
 
-	versionIDStr := r.PathValue("versionId")
+	versionIDStr := c.Param("versionId")
 	versionID, err := uuid.Parse(versionIDStr)
 	if err != nil {
-		writeErrorResponse(w, domain.NewValidationError("invalid version id: must be a valid uuid"))
+		writeErrorResponse(c, domain.NewValidationError("invalid version id: must be a valid uuid"))
 		return
 	}
 
-	if err := h.svc.DeleteDraftVersion(r.Context(), tenantID, agentID, versionID); err != nil {
-		writeErrorResponse(w, err)
+	if err := h.svc.DeleteDraftVersion(c.Request.Context(), tenantID, agentID, versionID); err != nil {
+		writeErrorResponse(c, err)
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	c.Status(http.StatusNoContent)
 }
 
 // Response helpers
@@ -295,7 +296,7 @@ type errorPayload struct {
 	Error domain.DomainError `json:"error"`
 }
 
-func writeErrorResponse(w http.ResponseWriter, err error) {
+func writeErrorResponse(c *gin.Context, err error) {
 	var domErr *domain.DomainError
 	if !errors.As(err, &domErr) {
 		domErr = domain.NewInternalError("internal server error", err)
@@ -313,11 +314,9 @@ func writeErrorResponse(w http.ResponseWriter, err error) {
 		statusCode = http.StatusUnauthorized
 	}
 
-	writeJSON(w, statusCode, errorPayload{Error: *domErr})
+	c.AbortWithStatusJSON(statusCode, errorPayload{Error: *domErr})
 }
 
-func writeJSON(w http.ResponseWriter, statusCode int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(data)
+func writeJSON(c *gin.Context, statusCode int, data any) {
+	c.JSON(statusCode, data)
 }

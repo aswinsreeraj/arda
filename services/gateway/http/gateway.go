@@ -14,6 +14,7 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 )
@@ -40,61 +41,60 @@ type GatewayConfig struct {
 
 // NewGateway creates and configures the API Gateway root http.Handler.
 func NewGateway(cfg GatewayConfig) http.Handler {
-	rootMux := http.NewServeMux()
+	router := gin.New()
+	router.Use(LoggingMiddleware())
 
 	// Public health check route
-	rootMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	router.GET("/healthz", func(c *gin.Context) {
+		WriteJSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	// Protected API multiplexer
-	apiMux := http.NewServeMux()
+	// Protected API route group
+	api := router.Group("/api")
+	api.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
+	api.Use(auth.AuthenticateMiddleware(cfg.JWTValidator, WriteErrorResponse))
 
 	// 1. Reliability Service Route
-	reliabilityHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleReliabilityGate(w, r, cfg.ReliabilityService)
-	})
-	apiMux.Handle("POST /api/v1/reliability/gate",
-		auth.RequireActionMiddleware(auth.ActionReliabilityGate, WriteErrorResponse)(reliabilityHandler),
+	api.POST("/v1/reliability/gate",
+		auth.RequireActionMiddleware(auth.ActionReliabilityGate, WriteErrorResponse),
+		func(c *gin.Context) {
+			handleReliabilityGate(c, cfg.ReliabilityService)
+		},
 	)
 
 	// 2. Agent Registry Routes (if registry handler is provided)
 	if cfg.RegistryHandler != nil {
-		wrapRoute := func(action auth.Action, pattern string) {
-			apiMux.Handle(pattern,
-				auth.RequireActionMiddleware(action, WriteErrorResponse)(cfg.RegistryHandler),
+		forwardToRegistry := func(c *gin.Context) {
+			cfg.RegistryHandler.ServeHTTP(c.Writer, c.Request)
+		}
+
+		wrapRoute := func(method, path string, action auth.Action) {
+			api.Handle(method, path,
+				auth.RequireActionMiddleware(action, WriteErrorResponse),
+				forwardToRegistry,
 			)
 		}
 
-		wrapRoute(auth.ActionAgentCreate, "POST /api/v1/agents")
-		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}")
-		wrapRoute(auth.ActionVersionCreate, "POST /api/v1/agents/{id}/versions")
-		wrapRoute(auth.ActionVersionPublish, "POST /api/v1/agents/{id}/versions/{versionId}/publish")
-		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}/versions/latest")
-		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}/versions/published/latest")
-		wrapRoute(auth.ActionAgentRead, "GET /api/v1/agents/{id}/versions/{versionId}")
-		wrapRoute(auth.ActionVersionUpdate, "PUT /api/v1/agents/{id}/versions/{versionId}")
-		wrapRoute(auth.ActionVersionDelete, "DELETE /api/v1/agents/{id}/versions/{versionId}")
+		wrapRoute("POST", "/v1/agents", auth.ActionAgentCreate)
+		wrapRoute("GET", "/v1/agents/:id", auth.ActionAgentRead)
+		wrapRoute("POST", "/v1/agents/:id/versions", auth.ActionVersionCreate)
+		wrapRoute("POST", "/v1/agents/:id/versions/:versionId/publish", auth.ActionVersionPublish)
+		wrapRoute("GET", "/v1/agents/:id/versions/latest", auth.ActionAgentRead)
+		wrapRoute("GET", "/v1/agents/:id/versions/published/latest", auth.ActionAgentRead)
+		wrapRoute("GET", "/v1/agents/:id/versions/:versionId", auth.ActionAgentRead)
+		wrapRoute("PUT", "/v1/agents/:id/versions/:versionId", auth.ActionVersionUpdate)
+		wrapRoute("DELETE", "/v1/agents/:id/versions/:versionId", auth.ActionVersionDelete)
 	}
 
 	// 3. Agent Execution Route
-	apiMux.Handle("POST /api/v1/agents/{id}/execute",
-		auth.RequireActionMiddleware(auth.ActionAgentExecute, WriteErrorResponse)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			handleExecuteAgent(w, r, cfg.RegistryService, cfg.TemporalClient)
-		})),
+	api.POST("/v1/agents/:id/execute",
+		auth.RequireActionMiddleware(auth.ActionAgentExecute, WriteErrorResponse),
+		func(c *gin.Context) {
+			handleExecuteAgent(c, cfg.RegistryService, cfg.TemporalClient)
+		},
 	)
 
-	// Build middleware chain:
-	authMiddleware := auth.AuthenticateMiddleware(cfg.JWTValidator, WriteErrorResponse)
-	rateLimitMiddleware := ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse)
-
-	protectedChain := authMiddleware(apiMux)
-	rateLimitedChain := rateLimitMiddleware(protectedChain)
-
-	rootMux.Handle("/api/", rateLimitedChain)
-
-	// Top-level logging for unauthenticated/public endpoints like /healthz
-	return LoggingMiddleware(rootMux)
+	return router
 }
 
 type gateRequestBody struct {
@@ -119,39 +119,39 @@ type gateResponseBody struct {
 
 type double = float64
 
-func handleReliabilityGate(w http.ResponseWriter, r *http.Request, relSvc proxy.ReliabilityService) {
-	identity, ok := auth.IdentityFromContext(r.Context())
+func handleReliabilityGate(c *gin.Context, relSvc proxy.ReliabilityService) {
+	identity, ok := auth.IdentityFromContext(c.Request.Context())
 	if !ok {
-		WriteErrorResponse(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+		WriteErrorResponse(c.Writer, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
 		return
 	}
 
 	if relSvc == nil {
-		WriteErrorResponse(w, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "reliability service upstream is not configured")
+		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "reliability service upstream is not configured")
 		return
 	}
 
 	var reqBody gateRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request json body")
+	if err := json.NewDecoder(c.Request.Body).Decode(&reqBody); err != nil {
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request json body")
 		return
 	}
 
 	// Validate inputs
 	if _, err := uuid.Parse(reqBody.AgentID); err != nil {
-		WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "agent_id must be a valid uuid")
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "agent_id must be a valid uuid")
 		return
 	}
 	if strings.TrimSpace(reqBody.CaseDescription) == "" {
-		WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "case_description cannot be empty")
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "case_description cannot be empty")
 		return
 	}
 	if strings.TrimSpace(reqBody.ProposedDecision) == "" {
-		WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "proposed_decision cannot be empty")
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "proposed_decision cannot be empty")
 		return
 	}
 	if reqBody.ReliabilityThreshold < 0.0 || reqBody.ReliabilityThreshold > 1.0 {
-		WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "reliability_threshold must be between 0.0 and 1.0")
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "reliability_threshold must be between 0.0 and 1.0")
 		return
 	}
 
@@ -164,13 +164,13 @@ func handleReliabilityGate(w http.ResponseWriter, r *http.Request, relSvc proxy.
 		ReliabilityThreshold: reqBody.ReliabilityThreshold,
 	}
 
-	grpcResp, err := relSvc.Gate(r.Context(), grpcReq)
+	grpcResp, err := relSvc.Gate(c.Request.Context(), grpcReq)
 	if err != nil {
 		if errors.Is(err, proxy.ErrUnconfigured) {
-			WriteErrorResponse(w, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "reliability service upstream is not configured")
+			WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "reliability service upstream is not configured")
 			return
 		}
-		WriteErrorResponse(w, http.StatusBadGateway, "UPSTREAM_ERROR", "reliability service evaluation failed")
+		WriteErrorResponse(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", "reliability service evaluation failed")
 		return
 	}
 
@@ -184,7 +184,7 @@ func handleReliabilityGate(w http.ResponseWriter, r *http.Request, relSvc proxy.
 		})
 	}
 
-	WriteJSON(w, http.StatusOK, gateResponseBody{
+	WriteJSON(c.Writer, http.StatusOK, gateResponseBody{
 		Confidence: grpcResp.GetConfidence(),
 		Outcome:    outcomeStr,
 		ReasonCode: grpcResp.GetReasonCode(),
@@ -205,34 +205,34 @@ type ExecuteAgentResponse struct {
 	Status         string    `json:"status"`
 }
 
-func handleExecuteAgent(w http.ResponseWriter, r *http.Request, regSvc RegistryService, temporalClient WorkflowDispatcher) {
-	identity, ok := auth.IdentityFromContext(r.Context())
+func handleExecuteAgent(c *gin.Context, regSvc RegistryService, temporalClient WorkflowDispatcher) {
+	identity, ok := auth.IdentityFromContext(c.Request.Context())
 	if !ok {
-		WriteErrorResponse(w, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+		WriteErrorResponse(c.Writer, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
 		return
 	}
 
-	agentIDStr := r.PathValue("id")
+	agentIDStr := c.Param("id")
 	agentID, err := uuid.Parse(agentIDStr)
 	if err != nil {
-		WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid agent id: must be a valid uuid")
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid agent id: must be a valid uuid")
 		return
 	}
 
 	var body executeRequestBody
-	if r.Body != nil && r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			WriteErrorResponse(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+			WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
 			return
 		}
 	}
 
 	if regSvc == nil {
-		WriteErrorResponse(w, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "registry service is not configured")
+		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "registry service is not configured")
 		return
 	}
 
-	ver, err := regSvc.GetLatestPublishedVersion(r.Context(), identity.TenantID, agentID)
+	ver, err := regSvc.GetLatestPublishedVersion(c.Request.Context(), identity.TenantID, agentID)
 	if err != nil {
 		var domErr *domain.DomainError
 		if errors.As(err, &domErr) {
@@ -245,20 +245,20 @@ func handleExecuteAgent(w http.ResponseWriter, r *http.Request, regSvc RegistryS
 			case domain.CodeUnauthenticated:
 				statusCode = http.StatusUnauthorized
 			}
-			WriteErrorResponse(w, statusCode, string(domErr.Code), domErr.Message)
+			WriteErrorResponse(c.Writer, statusCode, string(domErr.Code), domErr.Message)
 			return
 		}
-		WriteErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
+		WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
 		return
 	}
 
 	if ver == nil {
-		WriteErrorResponse(w, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
+		WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
 		return
 	}
 
 	if temporalClient == nil {
-		WriteErrorResponse(w, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "temporal workflow client is not configured")
+		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "temporal workflow client is not configured")
 		return
 	}
 
@@ -270,9 +270,9 @@ func handleExecuteAgent(w http.ResponseWriter, r *http.Request, regSvc RegistryS
 	}
 
 	workflowID := fmt.Sprintf("agent-exec-%s-%s", agentID, uuid.New().String())
-	run, err := temporalClient.StartAgentExecutionWorkflow(r.Context(), workflowID, wfInput)
+	run, err := temporalClient.StartAgentExecutionWorkflow(c.Request.Context(), workflowID, wfInput)
 	if err != nil {
-		WriteErrorResponse(w, http.StatusBadGateway, "UPSTREAM_ERROR", "failed to dispatch execution workflow to temporal")
+		WriteErrorResponse(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", "failed to dispatch execution workflow to temporal")
 		return
 	}
 
@@ -284,5 +284,5 @@ func handleExecuteAgent(w http.ResponseWriter, r *http.Request, regSvc RegistryS
 		Status:         "ACCEPTED",
 	}
 
-	WriteJSON(w, http.StatusAccepted, resp)
+	WriteJSON(c.Writer, http.StatusAccepted, resp)
 }

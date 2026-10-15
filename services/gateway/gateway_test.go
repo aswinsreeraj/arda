@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/aswinsreeraj/arda/services/gateway"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
@@ -20,9 +22,14 @@ import (
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 	registryhttp "github.com/aswinsreeraj/arda/services/registry/http"
 	"github.com/aswinsreeraj/arda/services/registry/service"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 )
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
 
 var testSecret = []byte("super-secure-test-signing-key-12345")
 var testIssuer = "arda-auth"
@@ -574,9 +581,13 @@ func TestGateway_RegistryContextTenantResolver(t *testing.T) {
 	})
 
 	resolver := registryhttp.ContextTenantResolver{}
-	regHandler := registryhttp.TenantMiddleware(resolver, dummyHandler)
+	regRouter := gin.New()
+	regRouter.Use(registryhttp.TenantMiddleware(resolver))
+	regRouter.POST("/api/v1/agents", func(c *gin.Context) {
+		dummyHandler(c.Writer, c.Request)
+	})
 
-	gw, _ := createTestGateway(t, regHandler, nil, nil)
+	gw, _ := createTestGateway(t, regRouter, nil, nil)
 	ts := httptest.NewServer(gw)
 	defer ts.Close()
 
@@ -1177,4 +1188,101 @@ func TestGateway_AgentExecutionEndpoint(t *testing.T) {
 			t.Errorf("expected UPSTREAM_UNAVAILABLE code, got %s", errResp.Error.Code)
 		}
 	})
+
+	t.Run("14. request cancellation propagates to downstream services", func(t *testing.T) {
+		ctxCancelled := make(chan bool, 1)
+		regMock := &mockGatewayRegistryService{
+			getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+				select {
+				case <-ctx.Done():
+					ctxCancelled <- true
+					return nil, ctx.Err()
+				case <-time.After(500 * time.Millisecond):
+					return publishedVer, nil
+				}
+			},
+		}
+		gw := createExecutionTestGateway(t, regMock, &mockTemporalWorkflowDispatcher{})
+		ts := httptest.NewServer(gw)
+		defer ts.Close()
+
+		id := auth.Identity{
+			UserID:   "dev-1",
+			TenantID: tenantID,
+			Role:     auth.RoleAgentDeveloper,
+		}
+		tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+		reqCtx, cancel := context.WithCancel(context.Background())
+		req, _ := http.NewRequestWithContext(reqCtx, "POST", ts.URL+path, bytes.NewReader([]byte("{}")))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		_, _ = http.DefaultClient.Do(req)
+
+		select {
+		case wasCancelled := <-ctxCancelled:
+			if !wasCancelled {
+				t.Fatalf("expected downstream context to be cancelled")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for context cancellation in downstream service")
+		}
+	})
+}
+
+func TestGatewayServer_Lifecycle(t *testing.T) {
+	cfg := gateway.Config{
+		Port:             "0",
+		JWTSecret:        testSecret,
+		JWTIssuer:        testIssuer,
+		JWTAudience:      testAudience,
+		RateLimitEnabled: false,
+	}
+
+	server, err := gateway.NewServer(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create gateway server: %v", err)
+	}
+
+	if server.Handler == nil {
+		t.Fatalf("expected non-nil server handler")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	httpServer := &http.Server{
+		Addr:    ln.Addr().String(),
+		Handler: server.Handler,
+	}
+
+	go func() {
+		_ = httpServer.Serve(ln)
+	}()
+
+	// Verify server responds on /healthz
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://%s/healthz", ln.Addr().String()))
+	if err != nil {
+		t.Fatalf("failed to query /healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from /healthz, got %d", resp.StatusCode)
+	}
+
+	// Verify graceful shutdown
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("graceful shutdown failed: %v", err)
+	}
 }

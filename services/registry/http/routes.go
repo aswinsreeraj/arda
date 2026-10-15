@@ -2,41 +2,39 @@ package http
 
 import (
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
-// RegisterRoutes builds and returns the http.Handler for the Agent Registry.
-func RegisterRoutes(h *Handler, resolver TenantResolver) http.Handler {
-	mux := http.NewServeMux()
+// RegisterRoutes builds and returns the *gin.Engine for the Agent Registry.
+func RegisterRoutes(h *Handler, resolver TenantResolver) *gin.Engine {
+	router := gin.New()
 
 	// Health check endpoint (public, unauthenticated)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	router.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
 	// Protected Agent Registry endpoints
-	apiMux := http.NewServeMux()
-
-	// Agent lifecycle routes
-	apiMux.HandleFunc("POST /api/v1/agents", h.CreateAgentHandler)
-	apiMux.HandleFunc("GET /api/v1/agents/{id}", h.GetAgentHandler)
-
-	// Version lifecycle routes
-	apiMux.HandleFunc("POST /api/v1/agents/{id}/versions", h.CreateVersionHandler)
-	apiMux.HandleFunc("POST /api/v1/agents/{id}/versions/{versionId}/publish", h.PublishVersionHandler)
-	apiMux.HandleFunc("GET /api/v1/agents/{id}/versions/latest", h.GetLatestPublishedVersionHandler)
-	apiMux.HandleFunc("GET /api/v1/agents/{id}/versions/published/latest", h.GetLatestPublishedVersionHandler)
-	apiMux.HandleFunc("GET /api/v1/agents/{id}/versions/{versionId}", h.GetVersionHandler)
-	apiMux.HandleFunc("PUT /api/v1/agents/{id}/versions/{versionId}", h.UpdateVersionHandler)
-	apiMux.HandleFunc("DELETE /api/v1/agents/{id}/versions/{versionId}", h.DeleteVersionHandler)
-
-	// Wrap apiMux with TenantMiddleware
 	if resolver == nil {
 		resolver = HeaderTenantResolver{}
 	}
-	protectedAPI := TenantMiddleware(resolver, apiMux)
 
-	// Mount protectedAPI on root mux
-	mux.Handle("/api/", protectedAPI)
+	api := router.Group("/api")
+	api.Use(TenantMiddleware(resolver))
 
-	return mux
+	// Agent lifecycle routes
+	api.POST("/v1/agents", h.CreateAgentHandler)
+	api.GET("/v1/agents/:id", h.GetAgentHandler)
+
+	// Version lifecycle routes
+	api.POST("/v1/agents/:id/versions", h.CreateVersionHandler)
+	api.POST("/v1/agents/:id/versions/:versionId/publish", h.PublishVersionHandler)
+	api.GET("/v1/agents/:id/versions/latest", h.GetLatestPublishedVersionHandler)
+	api.GET("/v1/agents/:id/versions/published/latest", h.GetLatestPublishedVersionHandler)
+	api.GET("/v1/agents/:id/versions/:versionId", h.GetVersionHandler)
+	api.PUT("/v1/agents/:id/versions/:versionId", h.UpdateVersionHandler)
+	api.DELETE("/v1/agents/:id/versions/:versionId", h.DeleteVersionHandler)
+
+	return router
 }
