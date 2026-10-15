@@ -1,0 +1,274 @@
+syntax = "proto3";
+
+package arda.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "proto/arda/v1/common.proto";
+
+option go_package = "github.com/aswinsreeraj/arda/gen/go/arda/v1;ardav1";
+
+// ExecutionMode defines the runtime autonomy and gating policies for an agent.
+// Canonical string mappings:
+//   EXECUTION_MODE_AUTONOMOUS        -> "autonomous"
+//   EXECUTION_MODE_SUPERVISED        -> "supervised"
+//   EXECUTION_MODE_HUMAN_IN_THE_LOOP -> "human_in_the_loop"
+//   EXECUTION_MODE_GATED             -> "gated"
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_AUTONOMOUS = 1;
+  EXECUTION_MODE_SUPERVISED = 2;
+  EXECUTION_MODE_HUMAN_IN_THE_LOOP = 3;
+  EXECUTION_MODE_GATED = 4;
+}
+
+// AgentConfiguration defines the operational parameters for an agent version.
+// Plaintext secrets or credentials must never be stored in this message;
+// external secret references (e.g. "secret:..." or "env:...") should be used.
+message AgentConfiguration {
+  // System prompt template for the agent. Supports variable placeholders.
+  string prompt_template = 1;
+
+  // List of tool identifiers enabled for this agent.
+  repeated string tools = 2;
+
+  // Minimum reliability threshold [0.0, 1.0] for gated execution.
+  double reliability_threshold = 3;
+
+  // Operating execution mode.
+  ExecutionMode execution_mode = 4;
+
+  // Guardrail settings (e.g., max_tokens, input/output validation).
+  // Stored as JSONB in PostgreSQL.
+  google.protobuf.Struct guardrails = 5;
+
+  // Operational budget limits (e.g., max_cost_cents, monthly_token_limit).
+  // Stored as JSONB in PostgreSQL.
+  google.protobuf.Struct budgets = 6;
+}
+
+// Agent represents the top-level entity owning versions within a tenant.
+// Maps to the 'agents' database table.
+message Agent {
+  // Unique agent identifier (UUID).
+  string id = 1;
+
+  // Tenant identifier (UUID) that owns this agent.
+  string tenant_id = 2;
+
+  // Human-readable agent name.
+  string name = 3;
+
+  // Timestamp when the agent was created.
+  google.protobuf.Timestamp created_at = 4;
+
+  // Timestamp when the agent was last updated.
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+// AgentVersion represents an immutable or draft revision of an agent's configuration.
+// Maps to the 'agent_versions' database table.
+//
+// Immutability Invariant:
+// When published is true, this version is strictly immutable.
+// Any edits to published configuration create a new draft version.
+message AgentVersion {
+  // Unique version identifier (UUID).
+  string id = 1;
+
+  // Agent identifier (UUID) this version belongs to.
+  string agent_id = 2;
+
+  // Sequential version number (1, 2, 3...).
+  int32 version_number = 3;
+
+  // Snapshot configuration for this version.
+  AgentConfiguration configuration = 4;
+
+  // Whether this version is published.
+  bool published = 5;
+
+  // Timestamp when the version was created.
+  google.protobuf.Timestamp created_at = 6;
+
+  // Timestamp when the version was last updated.
+  google.protobuf.Timestamp updated_at = 7;
+
+  // Timestamp when the version was published. Unset for draft versions.
+  google.protobuf.Timestamp published_at = 8;
+}
+
+// AgentDetail provides a consolidated view of an agent and its version states.
+message AgentDetail {
+  // Core agent entity.
+  Agent agent = 1;
+
+  // Currently active published version, if any.
+  AgentVersion latest_published_version = 2;
+
+  // Active draft version being edited, if any.
+  AgentVersion draft_version = 3;
+}
+
+// AgentRegistryService defines internal gRPC contracts for managing agents and versions.
+service AgentRegistryService {
+  // Creates a new agent along with its initial draft version (v1).
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+
+  // Retrieves an agent by ID with its latest published and draft version metadata.
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
+
+  // Lists all agents belonging to the authenticated tenant.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+
+  // Creates a new draft version for an existing agent.
+  rpc CreateAgentVersion(CreateAgentVersionRequest) returns (CreateAgentVersionResponse);
+
+  // Retrieves a specific version of an agent by version ID.
+  rpc GetAgentVersion(GetAgentVersionRequest) returns (GetAgentVersionResponse);
+
+  // Retrieves the latest published, immutable version of an agent.
+  rpc GetLatestPublishedVersion(GetLatestPublishedVersionRequest) returns (GetLatestPublishedVersionResponse);
+
+  // Updates the configuration of an existing draft version.
+  // Rejects modifications if the target version is already published.
+  rpc UpdateDraftVersion(UpdateDraftVersionRequest) returns (UpdateDraftVersionResponse);
+
+  // Publishes a draft version, making it the active published version and immutable.
+  rpc PublishVersion(PublishVersionRequest) returns (PublishVersionResponse);
+
+  // Deletes an unpublished draft version.
+  // Rejects deletion if the target version is already published.
+  rpc DeleteDraftVersion(DeleteDraftVersionRequest) returns (DeleteDraftVersionResponse);
+}
+
+message CreateAgentRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Human-readable agent name.
+  string name = 2;
+
+  // Initial configuration for version 1.
+  AgentConfiguration configuration = 3;
+}
+
+message CreateAgentResponse {
+  AgentDetail agent = 1;
+}
+
+message GetAgentRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Unique agent identifier (UUID).
+  string agent_id = 2;
+}
+
+message GetAgentResponse {
+  AgentDetail agent = 1;
+}
+
+message ListAgentsRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Optional pagination parameters.
+  PaginationRequest pagination = 2;
+}
+
+message ListAgentsResponse {
+  // List of agents scoped to the tenant.
+  repeated AgentDetail agents = 1;
+
+  // Pagination metadata.
+  PaginationResponse pagination = 2;
+}
+
+message CreateAgentVersionRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Target agent identifier (UUID).
+  string agent_id = 2;
+
+  // Configuration for the new version.
+  AgentConfiguration configuration = 3;
+}
+
+message CreateAgentVersionResponse {
+  AgentVersion version = 1;
+}
+
+message GetAgentVersionRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Target agent identifier (UUID).
+  string agent_id = 2;
+
+  // Version identifier (UUID).
+  string version_id = 3;
+}
+
+message GetAgentVersionResponse {
+  AgentVersion version = 1;
+}
+
+message GetLatestPublishedVersionRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Target agent identifier (UUID).
+  string agent_id = 2;
+}
+
+message GetLatestPublishedVersionResponse {
+  AgentVersion version = 1;
+}
+
+message UpdateDraftVersionRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Target agent identifier (UUID).
+  string agent_id = 2;
+
+  // Draft version identifier (UUID) to update.
+  string version_id = 3;
+
+  // New configuration to apply to the draft.
+  AgentConfiguration configuration = 4;
+}
+
+message UpdateDraftVersionResponse {
+  AgentVersion version = 1;
+}
+
+message PublishVersionRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Target agent identifier (UUID).
+  string agent_id = 2;
+
+  // Version identifier (UUID) to publish.
+  string version_id = 3;
+}
+
+message PublishVersionResponse {
+  AgentVersion version = 1;
+}
+
+message DeleteDraftVersionRequest {
+  // Tenant ID from trusted caller context.
+  string tenant_id = 1;
+
+  // Target agent identifier (UUID).
+  string agent_id = 2;
+
+  // Draft version identifier (UUID) to delete.
+  string version_id = 3;
+}
+
+message DeleteDraftVersionResponse {}

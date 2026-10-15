@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package arda.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aswinsreeraj/arda/gen/go/arda/v1;ardav1";
+
+// PaginationRequest defines standard pagination parameters for list operations.
+message PaginationRequest {
+  // Desired page size (maximum number of items to return).
+  // If zero or negative, the service default will be applied.
+  int32 page_size = 1;
+
+  // Continuation token indicating the starting offset/cursor for the page.
+  // Obtained from the previous PaginationResponse.next_page_token.
+  string page_token = 2;
+}
+
+// PaginationResponse provides pagination metadata for list operations.
+message PaginationResponse {
+  // Continuation token for fetching the subsequent page.
+  // Empty if there are no additional results.
+  string next_page_token = 1;
+
+  // Total count of matching items across all pages, if supported by the endpoint.
+  int32 total_count = 2;
+}
+
+// RequestMetadata carries standard request context across internal RPC boundaries.
+message RequestMetadata {
+  // Unique request correlation identifier (UUID).
+  string request_id = 1;
+
+  // Timestamp when the request was initiated.
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+// ErrorDetail provides structured error context for gRPC status details.
+// Note: This complements internal gRPC status details and does NOT replace
+// the external REST error envelope: {"error":{"code":"...","message":"...","details":{}}}.
+message ErrorDetail {
+  // Machine-readable error code (e.g. "VALIDATION_FAILED", "UNAUTHENTICATED", "NOT_FOUND").
+  string code = 1;
+
+  // Human-readable error message explaining the failure.
+  string message = 2;
+
+  // Structured key-value metadata providing additional diagnostic context.
+  map<string, string> metadata = 3;
+}

@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package arda.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aswinsreeraj/arda/gen/go/arda/v1;ardav1";
+
+// TenantStatus represents the operational lifecycle state of an ARDA tenant.
+// Stored in the PostgreSQL tenants table as 'active' or 'suspended'.
+enum TenantStatus {
+  TENANT_STATUS_UNSPECIFIED = 0;
+  TENANT_STATUS_ACTIVE = 1;
+  TENANT_STATUS_SUSPENDED = 2;
+}
+
+// Tenant represents an organization or tenant entity within the ARDA platform.
+// Maps to the 'tenants' database table.
+message Tenant {
+  // Unique tenant identifier (UUID).
+  string id = 1;
+
+  // Organization or tenant name. Must be non-empty.
+  string name = 2;
+
+  // Operational status of the tenant.
+  TenantStatus status = 3;
+
+  // Timestamp when the tenant record was created.
+  google.protobuf.Timestamp created_at = 4;
+
+  // Timestamp when the tenant record was last updated.
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+// TenantContext carries trusted tenant identity derived from the authentication
+// boundary (such as verified JWT claims) across internal service boundaries.
+//
+// Security Guarantee:
+// A client-supplied tenant identifier must NEVER be treated as authenticated identity.
+// Downstream services must always verify and enforce tenant scoping using this trusted context.
+message TenantContext {
+  // Authenticated tenant identifier (UUID).
+  string tenant_id = 1;
+
+  // Tenant or organization display name.
+  string tenant_name = 2;
+}
+
+// GetTenantRequest queries tenant details by tenant identifier.
+message GetTenantRequest {
+  // Tenant identifier (UUID). Must be verified against the caller's authorized scope.
+  string tenant_id = 1;
+}
+
+// GetTenantResponse returns the requested tenant entity.
+message GetTenantResponse {
+  Tenant tenant = 1;
+}

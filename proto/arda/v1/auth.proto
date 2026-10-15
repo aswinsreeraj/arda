@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package arda.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aswinsreeraj/arda/gen/go/arda/v1;ardav1";
+
+// Role defines the canonical RBAC roles recognized across ARDA.
+// Canonical string mappings:
+//   ROLE_SUPER_ADMIN     -> "super_admin"
+//   ROLE_COMPANY_ADMIN   -> "company_admin"
+//   ROLE_AGENT_DEVELOPER -> "agent_developer"
+//   ROLE_REVIEWER        -> "reviewer"
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_SUPER_ADMIN = 1;
+  ROLE_COMPANY_ADMIN = 2;
+  ROLE_AGENT_DEVELOPER = 3;
+  ROLE_REVIEWER = 4;
+}
+
+// UserIdentity represents an authenticated user's verified identity.
+// Derived exclusively from trusted JWT tokens or gateway authorization context.
+message UserIdentity {
+  // Unique user identifier (UUID or subject claim from JWT).
+  string user_id = 1;
+
+  // Verified tenant identifier (UUID) associated with this user.
+  string tenant_id = 2;
+
+  // Assigned RBAC role.
+  Role role = 3;
+
+  // User email address.
+  string email = 4;
+}
+
+// AuthContext carries verified authentication and authorization context
+// across internal service boundaries.
+//
+// Security Constraints:
+// Raw secrets, signing keys, password hashes, and bearer tokens must NEVER
+// be stored or transmitted in this contract.
+message AuthContext {
+  // Authenticated user identity.
+  UserIdentity identity = 1;
+
+  // Unique session or token identifier (e.g. JWT jti claim).
+  string token_id = 2;
+
+  // Expiration timestamp of the authenticated credential.
+  google.protobuf.Timestamp expires_at = 3;
+}

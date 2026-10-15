@@ -6,6 +6,20 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
+# Ensure Go binaries are in PATH
+if command -v go >/dev/null 2>&1; then
+  GOPATH_BIN="$(go env GOPATH 2>/dev/null)/bin"
+  if [[ -d "${GOPATH_BIN}" ]]; then
+    export PATH="${GOPATH_BIN}:${PATH}"
+  fi
+fi
+if [[ -d "/root/go/bin" ]]; then
+  export PATH="/root/go/bin:${PATH}"
+fi
+if [[ -d "/home/aswin/go/bin" ]]; then
+  export PATH="/home/aswin/go/bin:${PATH}"
+fi
+
 # Verify required code-generation tools are installed
 REQUIRED_TOOLS=("protoc" "protoc-gen-go" "protoc-gen-go-grpc")
 MISSING_TOOLS=()
