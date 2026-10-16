@@ -31,6 +31,7 @@ func RegisterRoutes(h *Handler, resolver TenantResolver) *gin.Engine {
 	api.POST("/v1/agents/:id/versions", h.CreateVersionHandler)
 	api.POST("/v1/agents/:id/versions/:versionId/publish", h.PublishVersionHandler)
 	api.GET("/v1/agents/:id/versions/latest", h.GetLatestPublishedVersionHandler)
+	api.GET("/v1/agents/:id/versions/published", h.GetLatestPublishedVersionHandler)
 	api.GET("/v1/agents/:id/versions/published/latest", h.GetLatestPublishedVersionHandler)
 	api.GET("/v1/agents/:id/versions/:versionId", h.GetVersionHandler)
 	api.PUT("/v1/agents/:id/versions/:versionId", h.UpdateVersionHandler)

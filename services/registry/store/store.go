@@ -18,6 +18,9 @@ type Store interface {
 	// GetAgent retrieves an agent scoped to a tenant. Returns ErrNotFound if not present.
 	GetAgent(ctx context.Context, tenantID, agentID uuid.UUID) (*domain.Agent, error)
 
+	// ListAgents retrieves paginated agents scoped strictly to a tenant.
+	ListAgents(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.Agent, int, error)
+
 	// CreateVersion inserts a new draft version for an agent.
 	CreateVersion(ctx context.Context, version *domain.AgentVersion) error
 

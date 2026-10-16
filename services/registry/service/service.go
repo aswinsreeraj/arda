@@ -126,13 +126,7 @@ func (s *RegistryService) GetAgent(ctx context.Context, tenantID, agentID uuid.U
 		return nil, err
 	}
 
-	latestPub, err := s.store.GetLatestPublishedVersion(ctx, agentID)
-	if err != nil {
-		var domErr *domain.DomainError
-		if !(err != nil && (domErr != nil || true)) {
-			// Ignore if not found
-		}
-	}
+	latestPub, _ := s.store.GetLatestPublishedVersion(ctx, agentID)
 
 	latestDraft, _ := s.store.GetLatestDraftVersion(ctx, agentID)
 
@@ -141,6 +135,30 @@ func (s *RegistryService) GetAgent(ctx context.Context, tenantID, agentID uuid.U
 		LatestPublishedVersion: latestPub,
 		DraftVersion:           latestDraft,
 	}, nil
+}
+
+// ListAgents retrieves paginated agents for a tenant.
+func (s *RegistryService) ListAgents(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.AgentDetail, int, error) {
+	if tenantID == uuid.Nil {
+		return nil, 0, domain.NewUnauthenticatedError("missing or invalid tenant identity")
+	}
+
+	agents, total, err := s.store.ListAgents(ctx, tenantID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	details := make([]domain.AgentDetail, len(agents))
+	for i, agent := range agents {
+		latestPub, _ := s.store.GetLatestPublishedVersion(ctx, agent.ID)
+		latestDraft, _ := s.store.GetLatestDraftVersion(ctx, agent.ID)
+		details[i] = domain.AgentDetail{
+			Agent:                  agent,
+			LatestPublishedVersion: latestPub,
+			DraftVersion:           latestDraft,
+		}
+	}
+	return details, total, nil
 }
 
 // CreateDraftVersion creates a new draft version with JSONB configuration for an agent.

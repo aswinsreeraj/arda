@@ -1,18 +1,27 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/http"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 	"gorm.io/gorm"
 
+	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
+	"github.com/aswinsreeraj/arda/services/gateway/credentials"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
-	"github.com/aswinsreeraj/arda/services/registry"
-	registryhttp "github.com/aswinsreeraj/arda/services/registry/http"
+	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
+	"github.com/aswinsreeraj/arda/services/registry/service"
+	"github.com/aswinsreeraj/arda/services/registry/store"
 )
 
 // Config holds runtime configuration for API Gateway v1.
@@ -28,6 +37,10 @@ type Config struct {
 	TemporalAddr           string
 	TemporalNamespace      string
 	TemporalTaskQueue      string
+	RegistryGRPCAddr       string
+	VaultAddress           string
+	VaultToken             string
+	VaultMount             string
 }
 
 // Server encapsulates the API Gateway HTTP server and dependencies.
@@ -35,8 +48,11 @@ type Server struct {
 	Handler            http.Handler
 	JWTValidator       *auth.TokenValidator
 	RateLimiter        *ratelimit.Limiter
+	RegistryClient     *proxy.RegistryClient
 	ReliabilityService proxy.ReliabilityService
 	TemporalClient     *temporal.Client
+	CredentialService  *credentials.Service
+	inProcessGRPC      *registrygrpc.Server
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
@@ -66,7 +82,6 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	if cfg.ReliabilityServiceAddr != "" {
 		relClient, err := proxy.NewReliabilityClient(cfg.ReliabilityServiceAddr)
 		if err != nil {
-			// Upstream is offline or unreachable; document gap
 			return nil, fmt.Errorf("failed to connect to reliability upstream: %w", err)
 		}
 		relSvc = relClient
@@ -86,31 +101,103 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		tempClient = tc
 	}
 
-	// Mount Registry HTTP handlers if database connection is supplied.
-	// Uses ContextTenantResolver so tenant identity is derived exclusively
-	// from the cryptographically verified JWT context and never from headers.
-	var regHandler http.Handler
-	var regSvc gatewayhttp.RegistryService
-	if db != nil {
-		regServer := registry.NewServer(db, registryhttp.ContextTenantResolver{})
-		regHandler = regServer.Handler
-		regSvc = regServer.Service
+	// Initialize Agent Registry gRPC connection
+	var regClient *proxy.RegistryClient
+	var inProcessGRPC *registrygrpc.Server
+	if cfg.RegistryGRPCAddr != "" {
+		rc, err := proxy.NewRegistryClient(cfg.RegistryGRPCAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to registry grpc service: %w", err)
+		}
+		regClient = rc
+	} else if db != nil {
+		// Spawn in-process gRPC server over bufconn so Gateway talks to Registry exclusively via gRPC
+		regStore := store.NewPostgresStore(db)
+		regService := service.NewRegistryService(regStore)
+		inProcessGRPC = registrygrpc.NewServer(regService)
+		lis := bufconn.Listen(1024 * 1024)
+		go func() {
+			_ = inProcessGRPC.Serve(lis)
+		}()
+		conn, err := grpc.DialContext(context.Background(), "bufnet",
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return lis.Dial()
+			}),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial in-process registry grpc: %w", err)
+		}
+		regClient = proxy.NewRegistryClientFromConn(conn)
+	}
+
+	// Initialize Vault and Credential Service if configured
+	var credSvc *credentials.Service
+	var credHandler *credentials.Handler
+	vaultCfg := vault.ConfigFromEnv()
+	if cfg.VaultAddress != "" {
+		vaultCfg.Address = cfg.VaultAddress
+	}
+	if cfg.VaultToken != "" {
+		vaultCfg.Token = cfg.VaultToken
+	}
+	if cfg.VaultMount != "" {
+		vaultCfg.MountPath = cfg.VaultMount
+	}
+
+	if vaultCfg.Token != "" {
+		vClient, err := vault.NewClient(vaultCfg)
+		if err == nil {
+			var credStore credentials.Store
+			if db != nil {
+				credStore = credentials.NewPostgresStore(db)
+			} else {
+				credStore = credentials.NewMemoryStore()
+			}
+			credSvc = credentials.NewService(vClient, credStore)
+			credHandler = credentials.NewHandler(credSvc, gatewayhttp.WriteErrorResponse)
+		}
+	}
+
+	var grpcClient ardav1.AgentRegistryServiceClient
+	if regClient != nil {
+		grpcClient = regClient.Client()
 	}
 
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
-		RegistryHandler:    regHandler,
-		RegistryService:    regSvc,
+		RegistryClient:     grpcClient,
 		ReliabilityService: relSvc,
 		TemporalClient:     tempClient,
+		CredentialHandler:  credHandler,
 	})
 
 	return &Server{
 		Handler:            gwHandler,
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
+		RegistryClient:     regClient,
 		ReliabilityService: relSvc,
 		TemporalClient:     tempClient,
+		CredentialService:  credSvc,
+		inProcessGRPC:      inProcessGRPC,
 	}, nil
+}
+
+// Close closes all client connections and cleans up background resources.
+func (s *Server) Close() error {
+	if s.RegistryClient != nil {
+		_ = s.RegistryClient.Close()
+	}
+	if s.ReliabilityService != nil {
+		_ = s.ReliabilityService.Close()
+	}
+	if s.TemporalClient != nil {
+		s.TemporalClient.Close()
+	}
+	if s.inProcessGRPC != nil {
+		s.inProcessGRPC.GracefulStop()
+	}
+	return nil
 }

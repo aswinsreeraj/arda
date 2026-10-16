@@ -125,6 +125,41 @@ func (s *PostgresStore) GetAgent(ctx context.Context, tenantID, agentID uuid.UUI
 	return model.ToDomain(), nil
 }
 
+// ListAgents retrieves paginated agents scoped strictly to a tenant.
+func (s *PostgresStore) ListAgents(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.Agent, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var total int64
+	if err := s.db.WithContext(ctx).Model(&AgentModel{}).Where("tenant_id = ?", tenantID).Count(&total).Error; err != nil {
+		return nil, 0, s.mapError(err, "count agents")
+	}
+
+	var models []AgentModel
+	err := s.db.WithContext(ctx).
+		Where("tenant_id = ?", tenantID).
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&models).Error
+	if err != nil {
+		return nil, 0, s.mapError(err, "list agents")
+	}
+
+	agents := make([]domain.Agent, len(models))
+	for i, m := range models {
+		agents[i] = *m.ToDomain()
+	}
+	return agents, int(total), nil
+}
+
 // GetNextVersionNumber returns the next incremental version number for an agent.
 func (s *PostgresStore) GetNextVersionNumber(ctx context.Context, agentID uuid.UUID) (int, error) {
 	var nextNum int

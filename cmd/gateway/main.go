@@ -68,6 +68,10 @@ func main() {
 		TemporalAddr:           os.Getenv("TEMPORAL_ADDRESS"),
 		TemporalNamespace:      os.Getenv("TEMPORAL_NAMESPACE"),
 		TemporalTaskQueue:      os.Getenv("TEMPORAL_TASK_QUEUE"),
+		RegistryGRPCAddr:       os.Getenv("REGISTRY_GRPC_ADDR"),
+		VaultAddress:           os.Getenv("VAULT_ADDR"),
+		VaultToken:             os.Getenv("VAULT_TOKEN"),
+		VaultMount:             os.Getenv("VAULT_MOUNT"),
 	}
 
 	server, err := gateway.NewServer(cfg, db.DB)
@@ -102,11 +106,8 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}
-	if server.ReliabilityService != nil {
-		_ = server.ReliabilityService.Close()
-	}
-	if server.TemporalClient != nil {
-		server.TemporalClient.Close()
+	if err := server.Close(); err != nil {
+		log.Printf("Error closing gateway server resources: %v", err)
 	}
 	log.Println("API Gateway stopped cleanly.")
 }

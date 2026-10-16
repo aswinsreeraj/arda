@@ -14,49 +14,59 @@ const (
 	ActionVersionPublish  Action = "version:publish"
 	ActionVersionDelete   Action = "version:delete"
 	ActionReliabilityGate Action = "reliability:gate"
+	ActionCredentialManage Action = "credential:manage"
+	ActionCredentialRead   Action = "credential:read"
 )
 
 // Policy defines the authorization policy matrix across all ARDA roles.
 var Policy = map[Role]map[Action]bool{
 	RoleSuperAdmin: {
-		ActionAgentCreate:     true,
-		ActionAgentRead:       true,
-		ActionAgentExecute:    true,
-		ActionVersionCreate:   true,
-		ActionVersionUpdate:   true,
-		ActionVersionPublish:  true,
-		ActionVersionDelete:   true,
-		ActionReliabilityGate: true,
+		ActionAgentCreate:      true,
+		ActionAgentRead:        true,
+		ActionAgentExecute:     true,
+		ActionVersionCreate:    true,
+		ActionVersionUpdate:    true,
+		ActionVersionPublish:   true,
+		ActionVersionDelete:    true,
+		ActionReliabilityGate:  true,
+		ActionCredentialManage: true,
+		ActionCredentialRead:   true,
 	},
 	RoleCompanyAdmin: {
-		ActionAgentCreate:     true,
-		ActionAgentRead:       true,
-		ActionAgentExecute:    true,
-		ActionVersionCreate:   true,
-		ActionVersionUpdate:   true,
-		ActionVersionPublish:  true,
-		ActionVersionDelete:   true,
-		ActionReliabilityGate: true,
+		ActionAgentCreate:      true,
+		ActionAgentRead:        true,
+		ActionAgentExecute:     true,
+		ActionVersionCreate:    true,
+		ActionVersionUpdate:    true,
+		ActionVersionPublish:   true,
+		ActionVersionDelete:    true,
+		ActionReliabilityGate:  true,
+		ActionCredentialManage: true,
+		ActionCredentialRead:   true,
 	},
 	RoleAgentDeveloper: {
-		ActionAgentCreate:     true,
-		ActionAgentRead:       true,
-		ActionAgentExecute:    true,
-		ActionVersionCreate:   true,
-		ActionVersionUpdate:   true,
-		ActionVersionPublish:  false, // Requires reviewer or admin approval
-		ActionVersionDelete:   false,
-		ActionReliabilityGate: true,
+		ActionAgentCreate:      true,
+		ActionAgentRead:        true,
+		ActionAgentExecute:     true,
+		ActionVersionCreate:    true,
+		ActionVersionUpdate:    true,
+		ActionVersionPublish:   false, // Requires reviewer or admin approval
+		ActionVersionDelete:    false,
+		ActionReliabilityGate:  true,
+		ActionCredentialManage: true,
+		ActionCredentialRead:   true,
 	},
 	RoleReviewer: {
-		ActionAgentCreate:     false,
-		ActionAgentRead:       true,
-		ActionAgentExecute:    false, // Reviewers evaluate and publish; they do not trigger operational executions
-		ActionVersionCreate:   false,
-		ActionVersionUpdate:   false,
-		ActionVersionPublish:  true, // Reviewers evaluate and publish
-		ActionVersionDelete:   false,
-		ActionReliabilityGate: true,
+		ActionAgentCreate:      false,
+		ActionAgentRead:        true,
+		ActionAgentExecute:     false, // Reviewers evaluate and publish; they do not trigger operational executions
+		ActionVersionCreate:    false,
+		ActionVersionUpdate:    false,
+		ActionVersionPublish:   true, // Reviewers evaluate and publish
+		ActionVersionDelete:    false,
+		ActionReliabilityGate:  true,
+		ActionCredentialManage: false,
+		ActionCredentialRead:   false,
 	},
 }
 

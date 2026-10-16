@@ -1,37 +1,63 @@
 # Agent Registry v1 Documentation
 
-Agent Registry v1 provides governed agent configuration management and immutable version history for the ARDA platform.
+Agent Registry v1 provides governed agent configuration management, immutable version history, and durable tenant isolation for the ARDA platform.
 
 ---
 
-## Architecture Overview
+## 1. Architecture Overview
 
-The Agent Registry is implemented with a clear separation of concerns:
+The Agent Registry is implemented with a clear separation of concerns across layered components:
 
+- **Protobuf & gRPC Interface (`proto/arda/v1/agent.proto` & `services/registry/grpc`)**:
+  Declares and implements the canonical internal service contract (`ardav1.AgentRegistryService`). Owns the internal service boundary behind the API Gateway.
 - **Domain Layer (`services/registry/domain`)**:
-  Defines `Agent`, `AgentVersion`, and `Configuration` models, domain error codes, execution modes, and validation logic.
+  Defines `Agent`, `AgentVersion`, and `Configuration` models, domain error codes, execution modes, and business rules.
 - **Store Layer (`services/registry/store`)**:
-  Persistence abstraction with a PostgreSQL implementation using parameterized SQL queries. Maps PostgreSQL constraints and trigger errors to domain errors.
+  Persistence abstraction backed by GORM and PostgreSQL. Maps PostgreSQL constraints and trigger errors to domain errors.
 - **Service Layer (`services/registry/service`)**:
-  Orchestrates agent and version lifecycles with strict tenant scoping. Prevents cross-tenant access and enforces version publishing rules.
+  Orchestrates agent and version lifecycles with strict tenant scoping. Enforces version numbering, publication, and draft modification rules.
 - **HTTP Layer (`services/registry/http`)**:
-  REST handlers, tenant context middleware, route registration, and standardized error responses.
+  Gin-based HTTP router and handlers for standalone local development and backwards compatibility.
 - **Entrypoint (`cmd/registry/main.go`)**:
-  Local service runner with graceful shutdown and configurable connection settings.
+  Runs both the gRPC server on `REGISTRY_GRPC_PORT` (default: 50051) and the HTTP server on `PORT` (default: 8080) with graceful shutdown.
 
 ---
 
-## Tenant Scoping & Security Boundary
+## 2. Internal gRPC Service Boundary
 
-- **Trusted Context**: The tenant ID is never accepted as an authoritative identity from an arbitrary request body. It is supplied via trusted application context.
-- **Tenant Isolation**: Every database read and write explicitly filters by `tenant_id`. Unscoped lookups are never performed. If Tenant B queries an agent ID belonging to Tenant A, a `404 NOT_FOUND` is returned so existence is not revealed.
-- **Authentication Gap & Remaining Work**:
-  - The current service relies on an explicit `TenantResolver` interface and `TenantMiddleware`, reading from the `X-Tenant-ID` header for local development.
-  - In production, this resolver will be replaced by API Gateway JWT validation middleware that cryptographically verifies tenant identity and injects it into context.
+In the ARDA platform architecture, external clients talk to the API Gateway over HTTP/JSON. The API Gateway communicates with the Agent Registry exclusively over gRPC:
+
+```
+External Client (HTTP/JSON)
+      ↓
+API Gateway (JWT Validation, RBAC, Rate Limiting)
+      ↓ (gRPC + Metadata: x-tenant-id, x-user-id, x-role)
+Agent Registry Server (InternalAuthInterceptor)
+      ↓
+Registry Service Layer
+      ↓
+GORM Persistence / PostgreSQL
+```
+
+### Supported RPC Methods (`ardav1.AgentRegistryService`)
+1. `CreateAgent`: Creates an agent and optional initial draft version.
+2. `GetAgent`: Retrieves agent detail by ID including latest published and draft versions.
+3. `ListAgents`: Lists agents for the authenticated tenant with pagination (`page_size`, `page_token`).
+4. `CreateAgentVersion`: Creates a new draft version for an agent.
+5. `GetAgentVersion`: Retrieves a specific version of an agent.
+6. `GetLatestPublishedVersion`: Resolves the latest published version of an agent.
+7. `UpdateDraftVersion`: Updates an existing draft version's configuration. Rejects updates if published.
+8. `PublishVersion`: Transitions a draft version to published (sets `published = true`, `published_at = now`).
+9. `DeleteDraftVersion`: Deletes an unpublished draft version. Rejects deletion if published.
+
+### Internal Authentication & Anti-Spoofing
+- The Agent Registry never trusts `tenant_id` fields provided in incoming request bodies alone.
+- The `InternalAuthInterceptor` inspects incoming gRPC metadata for `x-tenant-id`.
+- The interceptor verifies that the authenticated caller identity matches any requested `tenant_id`. Any attempt to spoof or query another tenant's data fails with `codes.PermissionDenied`.
 
 ---
 
-## Configuration & Supported Execution Modes
+## 3. Configuration & Supported Execution Modes
 
 The versioned agent configuration (`Configuration`) is stored as PostgreSQL-native `JSONB`:
 
@@ -51,11 +77,11 @@ The versioned agent configuration (`Configuration`) is stored as PostgreSQL-nati
 - **`gated`**: Evaluated against the reliability service contract before execution.
 
 > [!IMPORTANT]
-> **Credential Security**: Never store plaintext LLM API keys or MCP tokens in configuration fields. Store secret vault references (e.g., `secret:vault-key-id` or `env:VARIABLE_NAME`). The domain layer rejects configurations containing raw API tokens.
+> **Credential Security**: Never store plaintext LLM API keys or MCP tokens in configuration fields. Store secret vault references (e.g., `secret:credentials/llm/openai#api_key`). Raw secret values are rejected by validation.
 
 ---
 
-## Immutability Guarantees
+## 4. Immutability Guarantees
 
 1. **Database-Level Protection**: The PostgreSQL trigger `trg_agent_versions_immutability` blocks any `UPDATE` or `DELETE` on rows where `published = true`.
 2. **Application-Level Protection**: The service layer returns `409 PUBLISHED_VERSION_IMMUTABLE` when attempting to edit or delete a published version.
@@ -64,76 +90,33 @@ The versioned agent configuration (`Configuration`) is stored as PostgreSQL-nati
 
 ---
 
-## API Endpoints & Curl Examples
+## 5. Version Resolution Route Conventions
 
-Set the base URL and tenant headers:
+When accessing the registry through the API Gateway, the following route conventions are supported:
+
+- **Canonical Route:**
+  - `GET /api/v1/agents/:id/versions/latest`
+- **Supported Direct Aliases:**
+  - `GET /api/v1/agents/:id/versions/published`
+  - `GET /api/v1/agents/:id/versions/published/latest`
+- **Specific Version Route:**
+  - `GET /api/v1/agents/:id/versions/:versionId` (validates UUID)
+
+---
+
+## 6. Running Locally & Testing
+
 ```bash
-BASE_URL="http://127.0.0.1:8080"
-TENANT_A="a0000000-0000-0000-0000-000000000001"
-TENANT_B="b0000000-0000-0000-0000-000000000002"
-```
+# Start required local infrastructure
+docker compose -f deployments/local/docker-compose.yml up -d
 
-### 1. Create an Agent (with initial draft version)
-```bash
-curl -X POST "${BASE_URL}/api/v1/agents" \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: ${TENANT_A}" \
-  -d '{
-    "name": "Customer Support Agent",
-    "prompt_template": "You are a customer support agent.",
-    "tools": ["kb_search", "create_ticket"],
-    "reliability_threshold": 0.85,
-    "execution_mode": "supervised",
-    "guardrails": {"max_tokens": 2048},
-    "budgets": {"monthly_usd": 100.0}
-  }'
-```
+# Run migrations
+./scripts/migrate.sh up
 
-### 2. Retrieve an Agent by ID
-```bash
-curl -X GET "${BASE_URL}/api/v1/agents/<AGENT_ID>" \
-  -H "X-Tenant-ID: ${TENANT_A}"
-```
+# Run Agent Registry service (starts gRPC on :50051 and HTTP on :8080)
+export GRPC_PORT="50051"
+export PORT="8080"
+export DATABASE_URL="postgres://arda_user:arda_password@127.0.0.1:5432/arda?sslmode=disable"
 
-*(If called with `X-Tenant-ID: ${TENANT_B}`, returns `404 Not Found`)*
-
-### 3. Create a Draft Agent Version
-```bash
-curl -X POST "${BASE_URL}/api/v1/agents/<AGENT_ID>/versions" \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: ${TENANT_A}" \
-  -d '{
-    "configuration": {
-      "prompt_template": "Updated prompt v2.",
-      "tools": ["kb_search", "escalate"],
-      "reliability_threshold": 0.90,
-      "execution_mode": "autonomous"
-    }
-  }'
+go run cmd/registry/main.go
 ```
-
-### 4. Publish a Draft Version
-```bash
-curl -X POST "${BASE_URL}/api/v1/agents/<AGENT_ID>/versions/<VERSION_ID>/publish" \
-  -H "X-Tenant-ID: ${TENANT_A}"
-```
-
-### 5. Resolve the Latest Published Version
-```bash
-curl -X GET "${BASE_URL}/api/v1/agents/<AGENT_ID>/versions/latest" \
-  -H "X-Tenant-ID: ${TENANT_A}"
-```
-
-### 6. Verification of Immutability (Attempted Modification of Published Version)
-```bash
-curl -X PUT "${BASE_URL}/api/v1/agents/<AGENT_ID>/versions/<PUBLISHED_VERSION_ID>" \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: ${TENANT_A}" \
-  -d '{
-    "prompt_template": "Tampered prompt",
-    "tools": ["tamper"],
-    "reliability_threshold": 0.5,
-    "execution_mode": "autonomous"
-  }'
-```
-*Response: `409 Conflict` (`PUBLISHED_VERSION_IMMUTABLE`)*

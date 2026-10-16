@@ -11,9 +11,11 @@ import (
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
+	"github.com/aswinsreeraj/arda/services/gateway/credentials"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
+	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
@@ -33,10 +35,12 @@ type WorkflowDispatcher interface {
 type GatewayConfig struct {
 	JWTValidator       *auth.TokenValidator
 	RateLimiter        *ratelimit.Limiter
+	RegistryClient     ardav1.AgentRegistryServiceClient
 	RegistryHandler    http.Handler
 	RegistryService    RegistryService
 	ReliabilityService proxy.ReliabilityService
 	TemporalClient     WorkflowDispatcher
+	CredentialHandler  *credentials.Handler
 }
 
 // NewGateway creates and configures the API Gateway root http.Handler.
@@ -62,8 +66,58 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		},
 	)
 
-	// 2. Agent Registry Routes (if registry handler is provided)
-	if cfg.RegistryHandler != nil {
+	// 2. Agent Registry Routes (primary: gRPC client; fallback: HTTP handler)
+	if cfg.RegistryClient != nil {
+		api.POST("/v1/agents",
+			auth.RequireActionMiddleware(auth.ActionAgentCreate, WriteErrorResponse),
+			func(c *gin.Context) { handleCreateAgentGRPC(c, cfg.RegistryClient) },
+		)
+		api.GET("/v1/agents",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) { handleListAgentsGRPC(c, cfg.RegistryClient) },
+		)
+		api.GET("/v1/agents/:id",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) { handleGetAgentGRPC(c, cfg.RegistryClient) },
+		)
+		api.POST("/v1/agents/:id/versions",
+			auth.RequireActionMiddleware(auth.ActionVersionCreate, WriteErrorResponse),
+			func(c *gin.Context) { handleCreateVersionGRPC(c, cfg.RegistryClient) },
+		)
+		api.POST("/v1/agents/:id/versions/:versionId/publish",
+			auth.RequireActionMiddleware(auth.ActionVersionPublish, WriteErrorResponse),
+			func(c *gin.Context) { handlePublishVersionGRPC(c, cfg.RegistryClient) },
+		)
+
+		// Canonical route for latest published version
+		api.GET("/v1/agents/:id/versions/latest",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) { handleGetLatestPublishedVersionGRPC(c, cfg.RegistryClient) },
+		)
+		// Direct aliases for latest published version
+		api.GET("/v1/agents/:id/versions/published",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) { handleGetLatestPublishedVersionGRPC(c, cfg.RegistryClient) },
+		)
+		api.GET("/v1/agents/:id/versions/published/latest",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) { handleGetLatestPublishedVersionGRPC(c, cfg.RegistryClient) },
+		)
+
+		// Version retrieval by ID
+		api.GET("/v1/agents/:id/versions/:versionId",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) { handleGetVersionGRPC(c, cfg.RegistryClient) },
+		)
+		api.PUT("/v1/agents/:id/versions/:versionId",
+			auth.RequireActionMiddleware(auth.ActionVersionUpdate, WriteErrorResponse),
+			func(c *gin.Context) { handleUpdateDraftVersionGRPC(c, cfg.RegistryClient) },
+		)
+		api.DELETE("/v1/agents/:id/versions/:versionId",
+			auth.RequireActionMiddleware(auth.ActionVersionDelete, WriteErrorResponse),
+			func(c *gin.Context) { handleDeleteDraftVersionGRPC(c, cfg.RegistryClient) },
+		)
+	} else if cfg.RegistryHandler != nil {
 		forwardToRegistry := func(c *gin.Context) {
 			cfg.RegistryHandler.ServeHTTP(c.Writer, c.Request)
 		}
@@ -76,21 +130,47 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		}
 
 		wrapRoute("POST", "/v1/agents", auth.ActionAgentCreate)
+		wrapRoute("GET", "/v1/agents", auth.ActionAgentRead)
 		wrapRoute("GET", "/v1/agents/:id", auth.ActionAgentRead)
 		wrapRoute("POST", "/v1/agents/:id/versions", auth.ActionVersionCreate)
 		wrapRoute("POST", "/v1/agents/:id/versions/:versionId/publish", auth.ActionVersionPublish)
 		wrapRoute("GET", "/v1/agents/:id/versions/latest", auth.ActionAgentRead)
+		wrapRoute("GET", "/v1/agents/:id/versions/published", auth.ActionAgentRead)
 		wrapRoute("GET", "/v1/agents/:id/versions/published/latest", auth.ActionAgentRead)
 		wrapRoute("GET", "/v1/agents/:id/versions/:versionId", auth.ActionAgentRead)
 		wrapRoute("PUT", "/v1/agents/:id/versions/:versionId", auth.ActionVersionUpdate)
 		wrapRoute("DELETE", "/v1/agents/:id/versions/:versionId", auth.ActionVersionDelete)
 	}
 
-	// 3. Agent Execution Route
+	// 3. Credential Management Routes
+	if cfg.CredentialHandler != nil {
+		api.POST("/v1/credentials",
+			auth.RequireActionMiddleware(auth.ActionCredentialManage, WriteErrorResponse),
+			cfg.CredentialHandler.CreateCredentialHandler,
+		)
+		api.GET("/v1/credentials",
+			auth.RequireActionMiddleware(auth.ActionCredentialRead, WriteErrorResponse),
+			cfg.CredentialHandler.ListCredentialsHandler,
+		)
+		api.GET("/v1/credentials/:id",
+			auth.RequireActionMiddleware(auth.ActionCredentialRead, WriteErrorResponse),
+			cfg.CredentialHandler.GetCredentialHandler,
+		)
+		api.DELETE("/v1/credentials/:id",
+			auth.RequireActionMiddleware(auth.ActionCredentialManage, WriteErrorResponse),
+			cfg.CredentialHandler.DeleteCredentialHandler,
+		)
+		api.POST("/v1/credentials/:id/verify",
+			auth.RequireActionMiddleware(auth.ActionCredentialManage, WriteErrorResponse),
+			cfg.CredentialHandler.VerifyCredentialHandler,
+		)
+	}
+
+	// 4. Agent Execution Route
 	api.POST("/v1/agents/:id/execute",
 		auth.RequireActionMiddleware(auth.ActionAgentExecute, WriteErrorResponse),
 		func(c *gin.Context) {
-			handleExecuteAgent(c, cfg.RegistryService, cfg.TemporalClient)
+			handleExecuteAgent(c, cfg.RegistryClient, cfg.RegistryService, cfg.TemporalClient)
 		},
 	)
 
@@ -205,7 +285,7 @@ type ExecuteAgentResponse struct {
 	Status         string    `json:"status"`
 }
 
-func handleExecuteAgent(c *gin.Context, regSvc RegistryService, temporalClient WorkflowDispatcher) {
+func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceClient, regSvc RegistryService, temporalClient WorkflowDispatcher) {
 	identity, ok := auth.IdentityFromContext(c.Request.Context())
 	if !ok {
 		WriteErrorResponse(c.Writer, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
@@ -227,34 +307,59 @@ func handleExecuteAgent(c *gin.Context, regSvc RegistryService, temporalClient W
 		}
 	}
 
-	if regSvc == nil {
+	if regClient == nil && regSvc == nil {
 		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "registry service is not configured")
 		return
 	}
 
-	ver, err := regSvc.GetLatestPublishedVersion(c.Request.Context(), identity.TenantID, agentID)
-	if err != nil {
-		var domErr *domain.DomainError
-		if errors.As(err, &domErr) {
-			statusCode := http.StatusInternalServerError
-			switch domErr.Code {
-			case domain.CodeNotFound:
-				statusCode = http.StatusNotFound
-			case domain.CodeValidationFailed:
-				statusCode = http.StatusBadRequest
-			case domain.CodeUnauthenticated:
-				statusCode = http.StatusUnauthorized
-			}
-			WriteErrorResponse(c.Writer, statusCode, string(domErr.Code), domErr.Message)
+	var verID uuid.UUID
+	if regClient != nil {
+		ctx := withInternalAuth(c.Request.Context(), identity)
+		resp, err := regClient.GetLatestPublishedVersion(ctx, &ardav1.GetLatestPublishedVersionRequest{
+			TenantId: identity.TenantID.String(),
+			AgentId:  agentID.String(),
+		})
+		if err != nil {
+			status, code, msg := registrygrpc.MapGRPCErrorToHTTP(err)
+			WriteErrorResponse(c.Writer, status, code, msg)
 			return
 		}
-		WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
-		return
-	}
+		if resp == nil || resp.GetVersion() == nil {
+			WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
+			return
+		}
+		parsedID, err := uuid.Parse(resp.GetVersion().GetId())
+		if err != nil {
+			WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "invalid version id from registry")
+			return
+		}
+		verID = parsedID
+	} else {
+		ver, err := regSvc.GetLatestPublishedVersion(c.Request.Context(), identity.TenantID, agentID)
+		if err != nil {
+			var domErr *domain.DomainError
+			if errors.As(err, &domErr) {
+				statusCode := http.StatusInternalServerError
+				switch domErr.Code {
+				case domain.CodeNotFound:
+					statusCode = http.StatusNotFound
+				case domain.CodeValidationFailed:
+					statusCode = http.StatusBadRequest
+				case domain.CodeUnauthenticated:
+					statusCode = http.StatusUnauthorized
+				}
+				WriteErrorResponse(c.Writer, statusCode, string(domErr.Code), domErr.Message)
+				return
+			}
+			WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
+			return
+		}
 
-	if ver == nil {
-		WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
-		return
+		if ver == nil {
+			WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
+			return
+		}
+		verID = ver.ID
 	}
 
 	if temporalClient == nil {
@@ -265,7 +370,7 @@ func handleExecuteAgent(c *gin.Context, regSvc RegistryService, temporalClient W
 	wfInput := temporal.AgentExecutionInput{
 		TenantID:       identity.TenantID,
 		AgentID:        agentID,
-		AgentVersionID: ver.ID,
+		AgentVersionID: verID,
 		ExecutionInput: body.Input,
 	}
 
@@ -280,7 +385,7 @@ func handleExecuteAgent(c *gin.Context, regSvc RegistryService, temporalClient W
 		WorkflowID:     run.GetID(),
 		RunID:          run.GetRunID(),
 		AgentID:        agentID,
-		AgentVersionID: ver.ID,
+		AgentVersionID: verID,
 		Status:         "ACCEPTED",
 	}
 

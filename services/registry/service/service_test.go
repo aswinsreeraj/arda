@@ -53,6 +53,24 @@ func (m *mockStore) GetAgent(ctx context.Context, tenantID, agentID uuid.UUID) (
 	return agent, nil
 }
 
+func (m *mockStore) ListAgents(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.Agent, int, error) {
+	var matched []domain.Agent
+	for _, a := range m.agents {
+		if a.TenantID == tenantID {
+			matched = append(matched, *a)
+		}
+	}
+	total := len(matched)
+	if offset >= total {
+		return []domain.Agent{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return matched[offset:end], total, nil
+}
+
 func (m *mockStore) CreateVersion(ctx context.Context, version *domain.AgentVersion) error {
 	if m.createVerErr != nil {
 		return m.createVerErr
