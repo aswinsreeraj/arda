@@ -170,17 +170,14 @@ func (s *RegistryService) CreateDraftVersion(ctx context.Context, tenantID, agen
 		return nil, domain.NewValidationError("invalid agent id")
 	}
 
-	// Verify agent exists and belongs to the authenticated tenant
 	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
 		return nil, err
 	}
 
-	// Validate configuration
 	if err := domain.ValidateConfiguration(cfg); err != nil {
 		return nil, err
 	}
 
-	// Get next version number
 	nextVersion, err := s.store.GetNextVersionNumber(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -210,7 +207,6 @@ func (s *RegistryService) PublishVersion(ctx context.Context, tenantID, agentID,
 		return nil, domain.NewValidationError("invalid agent id or version id")
 	}
 
-	// Enforce tenant ownership of the agent
 	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
 		return nil, err
 	}
@@ -227,7 +223,6 @@ func (s *RegistryService) GetLatestPublishedVersion(ctx context.Context, tenantI
 		return nil, domain.NewValidationError("invalid agent id")
 	}
 
-	// Enforce tenant ownership of the agent
 	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
 		return nil, err
 	}
@@ -244,7 +239,6 @@ func (s *RegistryService) GetVersion(ctx context.Context, tenantID, agentID, ver
 		return nil, domain.NewValidationError("invalid agent id or version id")
 	}
 
-	// Enforce tenant ownership of the agent
 	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
 		return nil, err
 	}
@@ -258,7 +252,6 @@ func (s *RegistryService) UpdateDraftVersion(ctx context.Context, tenantID, agen
 		return nil, domain.NewUnauthenticatedError("missing or invalid tenant identity")
 	}
 
-	// Enforce tenant ownership of the agent
 	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
 		return nil, err
 	}
@@ -288,7 +281,6 @@ func (s *RegistryService) DeleteDraftVersion(ctx context.Context, tenantID, agen
 		return domain.NewUnauthenticatedError("missing or invalid tenant identity")
 	}
 
-	// Enforce tenant ownership of the agent
 	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
 		return err
 	}

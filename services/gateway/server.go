@@ -133,7 +133,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		regClient = proxy.NewRegistryClientFromConn(conn)
 	}
 
-	// Initialize Vault and Credential Service if configured
+	// Initialize Vault and Credential Service
 	var credSvc *credentials.Service
 	var credHandler *credentials.Handler
 	vaultCfg := vault.ConfigFromEnv()
@@ -146,20 +146,28 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	if cfg.VaultMount != "" {
 		vaultCfg.MountPath = cfg.VaultMount
 	}
-
-	if vaultCfg.Token != "" {
-		vClient, err := vault.NewClient(vaultCfg)
-		if err == nil {
-			var credStore credentials.Store
-			if db != nil {
-				credStore = credentials.NewPostgresStore(db)
-			} else {
-				credStore = credentials.NewMemoryStore()
-			}
-			credSvc = credentials.NewService(vClient, credStore)
-			credHandler = credentials.NewHandler(credSvc, gatewayhttp.WriteErrorResponse)
-		}
+	if vaultCfg.Token == "" {
+		vaultCfg.Token = "root"
 	}
+	if vaultCfg.Address == "" {
+		vaultCfg.Address = "http://127.0.0.1:8200"
+	}
+
+	var secretStore vault.SecretStore
+	if vClient, err := vault.NewClient(vaultCfg); err == nil {
+		secretStore = vClient
+	} else {
+		secretStore = vault.NewMemoryStore()
+	}
+
+	var credStore credentials.Store
+	if db != nil {
+		credStore = credentials.NewPostgresStore(db)
+	} else {
+		credStore = credentials.NewMemoryStore()
+	}
+	credSvc = credentials.NewService(secretStore, credStore)
+	credHandler = credentials.NewHandler(credSvc, gatewayhttp.WriteErrorResponse)
 
 	// Initialize Identity, User Accounts, and Tenant Membership Service
 	var identStore identity.Store

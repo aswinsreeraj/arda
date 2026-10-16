@@ -72,7 +72,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 	api.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
 	api.Use(auth.AuthenticateMiddleware(cfg.JWTValidator, WriteErrorResponse))
 
-	// 1. Reliability Service Route
+	// Reliability Service
 	api.POST("/v1/reliability/gate",
 		auth.RequireActionMiddleware(auth.ActionReliabilityGate, WriteErrorResponse),
 		func(c *gin.Context) {
@@ -80,7 +80,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		},
 	)
 
-	// 2. Agent Registry Routes (primary: gRPC client; fallback: HTTP handler)
+	// Agent Registry Routes (gRPC client; fallback: HTTP handler)
 	if cfg.RegistryClient != nil {
 		api.POST("/v1/agents",
 			auth.RequireActionMiddleware(auth.ActionAgentCreate, WriteErrorResponse),
@@ -156,7 +156,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		wrapRoute("DELETE", "/v1/agents/:id/versions/:versionId", auth.ActionVersionDelete)
 	}
 
-	// 3. Credential Management Routes
+	// Credential Management (Vault KV v2)
 	if cfg.CredentialHandler != nil {
 		api.POST("/v1/credentials",
 			auth.RequireActionMiddleware(auth.ActionCredentialManage, WriteErrorResponse),
@@ -180,7 +180,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		)
 	}
 
-	// 4. Agent Execution Route
+	// Agent Execution (Temporal)
 	api.POST("/v1/agents/:id/execute",
 		auth.RequireActionMiddleware(auth.ActionAgentExecute, WriteErrorResponse),
 		func(c *gin.Context) {
@@ -188,7 +188,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		},
 	)
 
-	// 5. Identity & Tenant Membership Protected Routes
+	// Identity and Tenant Membership
 	if cfg.IdentityHandler != nil {
 		api.GET("/v1/auth/me", cfg.IdentityHandler.GetCurrentUserHandler)
 
@@ -213,8 +213,7 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			cfg.IdentityHandler.DeleteTenantMemberHandler,
 		)
 
-		// Users (/users) endpoint group per RBAC matrix:
-		// super_admin: - | company_admin: full (own tenant) | agent_developer: self only | reviewer: self only
+		// Users resource endpoints
 		api.GET("/v1/users", cfg.IdentityHandler.ListUsersHandler)
 		api.GET("/v1/users/:userId", cfg.IdentityHandler.GetUserHandler)
 		api.POST("/v1/users",

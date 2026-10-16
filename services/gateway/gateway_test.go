@@ -1664,9 +1664,8 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 201 Created on save LLM credential, got %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Verify secret_value is NEVER returned in response
 	if strings.Contains(string(body), "mock-llm-key-not-real") {
-		t.Fatalf("SECURITY VIOLATION: raw secret value was leaked in API response body!")
+		t.Fatalf("secret_value must not be returned in API response")
 	}
 
 	var llmCred credentials.Credential
@@ -1680,7 +1679,7 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("unexpected category/provider: %s/%s", llmCred.Category, llmCred.Provider)
 	}
 
-	// 2. Save Mock MCP Credential as company_admin
+	// Save MCP Credential as company_admin
 	mcpReq := map[string]any{
 		"category":     "mcp",
 		"provider":     "database-mcp",
@@ -1691,13 +1690,13 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 201 Created on save MCP credential, got %d: %s", resp.StatusCode, string(body))
 	}
 	if strings.Contains(string(body), "mock-mcp-token-not-real") {
-		t.Fatalf("SECURITY VIOLATION: raw secret value was leaked in API response body!")
+		t.Fatalf("secret_value must not be returned in API response")
 	}
 
 	var mcpCred credentials.Credential
 	_ = json.Unmarshal(body, &mcpCred)
 
-	// 3. Verify Agent Developer has read-only access (can list & get, but CANNOT create or delete)
+	// Agent Developer has read-only access (can list & get, but cannot create or delete)
 	resp, _ = doRequest(ts, "POST", "/api/v1/credentials", devToken, nil, mcpReq)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 Forbidden when agent_developer creates credential, got %d", resp.StatusCode)
@@ -1708,7 +1707,7 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 403 Forbidden when agent_developer deletes credential, got %d", resp.StatusCode)
 	}
 
-	// Developer can list credentials (read-only per matrix)
+	// Developer can list credentials
 	resp, body = doRequest(ts, "GET", "/api/v1/credentials", devToken, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK on list credentials for developer, got %d: %s", resp.StatusCode, string(body))
@@ -1723,13 +1722,13 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 2 credentials in list, got %d", len(listResp.Credentials))
 	}
 
-	// 4. Developer can get Credential by ID
+	// Developer can get credential metadata by ID
 	resp, body = doRequest(ts, "GET", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), devToken, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK on get credential by ID for developer, got %d: %s", resp.StatusCode, string(body))
 	}
 	if strings.Contains(string(body), "mock-llm-key-not-real") {
-		t.Fatalf("SECURITY VIOLATION: raw secret leaked in get credential response!")
+		t.Fatalf("secret_value must not be returned in get credential response")
 	}
 
 	// 5. Verify Credential (managed action, allowed for company_admin)

@@ -197,12 +197,10 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 		return nil, ErrAccountDisabled
 	}
 
-	// Verify password hash
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		return nil, ErrInvalidCredentials
 	}
 
-	// Resolve tenant and role
 	var activeTenantID uuid.UUID
 	var resolvedRole auth.Role
 
@@ -218,14 +216,12 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 	if user.IsSuperAdmin {
 		resolvedRole = auth.RoleSuperAdmin
 		if reqTenantUUID != uuid.Nil {
-			// Verify tenant exists
 			_, err := s.store.GetTenantByID(ctx, reqTenantUUID)
 			if err != nil {
 				return nil, fmt.Errorf("requested tenant not found: %w", err)
 			}
 			activeTenantID = reqTenantUUID
 		} else {
-			// Find first membership or default tenant
 			memberships, _ := s.store.ListUserMemberships(ctx, user.ID)
 			if len(memberships) > 0 {
 				activeTenantID = memberships[0].TenantID
@@ -234,7 +230,6 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 			}
 		}
 	} else {
-		// Non-super_admin: membership required
 		memberships, err := s.store.ListUserMemberships(ctx, user.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to retrieve memberships: %w", err)
@@ -337,7 +332,6 @@ func (s *Service) CreateTenant(ctx context.Context, caller auth.Identity, req Cr
 		return nil, nil, fmt.Errorf("invalid caller user id: %w", err)
 	}
 
-	// Verify caller user account exists
 	_, err = s.store.GetUserByID(ctx, userUUID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("caller user not found: %w", err)
@@ -367,7 +361,6 @@ func (s *Service) AddTenantMember(ctx context.Context, caller auth.Identity, ten
 		return nil, ErrInvalidRole
 	}
 
-	// Resolve user by UserID or Email
 	var targetUserID uuid.UUID
 	if req.UserID != uuid.Nil {
 		targetUserID = req.UserID
@@ -381,7 +374,6 @@ func (s *Service) AddTenantMember(ctx context.Context, caller auth.Identity, ten
 		return nil, errors.New("user_id or email is required")
 	}
 
-	// Verify target user exists
 	targetUser, err := s.store.GetUserByID(ctx, targetUserID)
 	if err != nil {
 		return nil, err
@@ -390,7 +382,6 @@ func (s *Service) AddTenantMember(ctx context.Context, caller auth.Identity, ten
 		return nil, errors.New("cannot add a disabled user account to a tenant")
 	}
 
-	// Verify tenant exists
 	_, err = s.store.GetTenantByID(ctx, tenantID)
 	if err != nil {
 		return nil, err

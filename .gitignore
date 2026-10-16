@@ -37,3 +37,6 @@ logs/
 
 # WSL files
 *.Identifier
+
+# Manual verification scripts
+/scripts/manual/
