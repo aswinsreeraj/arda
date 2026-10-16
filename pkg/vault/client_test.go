@@ -531,5 +531,3 @@ func TestRegistryConfigurationCompatibility(t *testing.T) {
 		t.Fatalf("mismatch in parsed field reference: %+v", parsedField)
 	}
 }
-
-

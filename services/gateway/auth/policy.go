@@ -6,67 +6,82 @@ import "fmt"
 type Action string
 
 const (
-	ActionAgentCreate     Action = "agent:create"
-	ActionAgentRead       Action = "agent:read"
-	ActionAgentExecute    Action = "agent:execute"
-	ActionVersionCreate   Action = "version:create"
-	ActionVersionUpdate   Action = "version:update"
-	ActionVersionPublish  Action = "version:publish"
-	ActionVersionDelete   Action = "version:delete"
-	ActionReliabilityGate Action = "reliability:gate"
+	ActionAgentCreate      Action = "agent:create"
+	ActionAgentRead        Action = "agent:read"
+	ActionAgentExecute     Action = "agent:execute"
+	ActionVersionCreate    Action = "version:create"
+	ActionVersionUpdate    Action = "version:update"
+	ActionVersionPublish   Action = "version:publish"
+	ActionVersionDelete    Action = "version:delete"
+	ActionReliabilityGate  Action = "reliability:gate"
 	ActionCredentialManage Action = "credential:manage"
 	ActionCredentialRead   Action = "credential:read"
+	ActionTenantCreate     Action = "tenant:create"
+	ActionTenantMemberManage Action = "tenant:member:manage"
+	ActionTenantMemberRead Action = "tenant:member:read"
 )
 
 // Policy defines the authorization policy matrix across all ARDA roles.
 var Policy = map[Role]map[Action]bool{
 	RoleSuperAdmin: {
-		ActionAgentCreate:      true,
-		ActionAgentRead:        true,
-		ActionAgentExecute:     true,
-		ActionVersionCreate:    true,
-		ActionVersionUpdate:    true,
-		ActionVersionPublish:   true,
-		ActionVersionDelete:    true,
-		ActionReliabilityGate:  true,
-		ActionCredentialManage: true,
-		ActionCredentialRead:   true,
+		ActionAgentCreate:        false,
+		ActionAgentRead:          false,
+		ActionAgentExecute:       false,
+		ActionVersionCreate:      false,
+		ActionVersionUpdate:      false,
+		ActionVersionPublish:     false,
+		ActionVersionDelete:      false,
+		ActionReliabilityGate:    false,
+		ActionCredentialManage:   false,
+		ActionCredentialRead:     false,
+		ActionTenantCreate:       true,  // Full for /tenants platform management
+		ActionTenantMemberManage: false, // Tenant scoped
+		ActionTenantMemberRead:   false, // Tenant scoped
 	},
 	RoleCompanyAdmin: {
-		ActionAgentCreate:      true,
-		ActionAgentRead:        true,
-		ActionAgentExecute:     true,
-		ActionVersionCreate:    true,
-		ActionVersionUpdate:    true,
-		ActionVersionPublish:   true,
-		ActionVersionDelete:    true,
-		ActionReliabilityGate:  true,
-		ActionCredentialManage: true,
-		ActionCredentialRead:   true,
+		ActionAgentCreate:        true,
+		ActionAgentRead:          true,
+		ActionAgentExecute:       true,
+		ActionVersionCreate:      true,
+		ActionVersionUpdate:      true,
+		ActionVersionPublish:     true,
+		ActionVersionDelete:      true,
+		ActionReliabilityGate:    true,
+		ActionCredentialManage:   true,
+		ActionCredentialRead:     true,
+		ActionTenantCreate:       false, // Platform tenants managed by super_admin
+		ActionTenantMemberManage: true,  // Full for own tenant
+		ActionTenantMemberRead:   true,
 	},
 	RoleAgentDeveloper: {
-		ActionAgentCreate:      true,
-		ActionAgentRead:        true,
-		ActionAgentExecute:     true,
-		ActionVersionCreate:    true,
-		ActionVersionUpdate:    true,
-		ActionVersionPublish:   false, // Requires reviewer or admin approval
-		ActionVersionDelete:    false,
-		ActionReliabilityGate:  true,
-		ActionCredentialManage: true,
-		ActionCredentialRead:   true,
+		ActionAgentCreate:        true,
+		ActionAgentRead:          true,
+		ActionAgentExecute:       true,
+		ActionVersionCreate:      true,
+		ActionVersionUpdate:      true,
+		ActionVersionPublish:     false, // Requires reviewer or admin approval
+		ActionVersionDelete:      false,
+		ActionReliabilityGate:    true,
+		ActionCredentialManage:   false, // Read-only per matrix
+		ActionCredentialRead:     true,
+		ActionTenantCreate:       false,
+		ActionTenantMemberManage: false, // Self only via /auth/me
+		ActionTenantMemberRead:   false,
 	},
 	RoleReviewer: {
-		ActionAgentCreate:      false,
-		ActionAgentRead:        true,
-		ActionAgentExecute:     false, // Reviewers evaluate and publish; they do not trigger operational executions
-		ActionVersionCreate:    false,
-		ActionVersionUpdate:    false,
-		ActionVersionPublish:   true, // Reviewers evaluate and publish
-		ActionVersionDelete:    false,
-		ActionReliabilityGate:  true,
-		ActionCredentialManage: false,
-		ActionCredentialRead:   false,
+		ActionAgentCreate:        false,
+		ActionAgentRead:          true,
+		ActionAgentExecute:       false,
+		ActionVersionCreate:      false,
+		ActionVersionUpdate:      false,
+		ActionVersionPublish:     true, // Read + resolve
+		ActionVersionDelete:      false,
+		ActionReliabilityGate:    true,
+		ActionCredentialManage:   false, // No access (-)
+		ActionCredentialRead:     false,
+		ActionTenantCreate:       false,
+		ActionTenantMemberManage: false, // Self only via /auth/me
+		ActionTenantMemberRead:   false,
 	},
 }
 

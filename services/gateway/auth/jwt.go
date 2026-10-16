@@ -134,6 +134,16 @@ func (v *TokenValidator) ValidateToken(tokenString string) (Identity, error) {
 	}, nil
 }
 
+// IssueToken generates a signed access JWT for the verified identity.
+func (v *TokenValidator) IssueToken(id Identity, ttl time.Duration) (string, error) {
+	return GenerateTestToken(id, v.config, ttl)
+}
+
+// Config returns the active JWTConfig.
+func (v *TokenValidator) Config() JWTConfig {
+	return v.config
+}
+
 // GenerateTestToken creates a signed token for testing or local authorization purposes.
 func GenerateTestToken(id Identity, cfg JWTConfig, ttl time.Duration) (string, error) {
 	now := time.Now().UTC()

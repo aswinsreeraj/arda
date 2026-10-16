@@ -12,6 +12,7 @@ import (
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/credentials"
+	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
@@ -41,6 +42,7 @@ type GatewayConfig struct {
 	ReliabilityService proxy.ReliabilityService
 	TemporalClient     WorkflowDispatcher
 	CredentialHandler  *credentials.Handler
+	IdentityHandler    *identity.Handler
 }
 
 // NewGateway creates and configures the API Gateway root http.Handler.
@@ -52,6 +54,18 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 	router.GET("/healthz", func(c *gin.Context) {
 		WriteJSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// Public authentication endpoints (rate-limited, unauthenticated)
+	if cfg.IdentityHandler != nil {
+		publicAuth := router.Group("/api/v1/auth")
+		publicAuth.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
+		publicAuth.POST("/register", cfg.IdentityHandler.RegisterHandler)
+		publicAuth.POST("/login", cfg.IdentityHandler.LoginHandler)
+
+		publicTenants := router.Group("/api/v1/tenants")
+		publicTenants.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
+		publicTenants.POST("/register", cfg.IdentityHandler.RegisterTenantHandler)
+	}
 
 	// Protected API route group
 	api := router.Group("/api")
@@ -173,6 +187,49 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			handleExecuteAgent(c, cfg.RegistryClient, cfg.RegistryService, cfg.TemporalClient)
 		},
 	)
+
+	// 5. Identity & Tenant Membership Protected Routes
+	if cfg.IdentityHandler != nil {
+		api.GET("/v1/auth/me", cfg.IdentityHandler.GetCurrentUserHandler)
+
+		api.POST("/v1/tenants",
+			auth.RequireActionMiddleware(auth.ActionTenantCreate, WriteErrorResponse),
+			cfg.IdentityHandler.CreateTenantHandler,
+		)
+		api.POST("/v1/tenants/:tenantId/members",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.AddTenantMemberHandler,
+		)
+		api.GET("/v1/tenants/:tenantId/members",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberRead, WriteErrorResponse),
+			cfg.IdentityHandler.ListTenantMembersHandler,
+		)
+		api.PATCH("/v1/tenants/:tenantId/members/:userId",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.UpdateTenantMemberHandler,
+		)
+		api.DELETE("/v1/tenants/:tenantId/members/:userId",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.DeleteTenantMemberHandler,
+		)
+
+		// Users (/users) endpoint group per RBAC matrix:
+		// super_admin: - | company_admin: full (own tenant) | agent_developer: self only | reviewer: self only
+		api.GET("/v1/users", cfg.IdentityHandler.ListUsersHandler)
+		api.GET("/v1/users/:userId", cfg.IdentityHandler.GetUserHandler)
+		api.POST("/v1/users",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.CreateUserHandler,
+		)
+		api.PATCH("/v1/users/:userId",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.UpdateUserHandler,
+		)
+		api.DELETE("/v1/users/:userId",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.DeleteUserHandler,
+		)
+	}
 
 	return router
 }

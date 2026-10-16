@@ -17,6 +17,7 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/credentials"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
+	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
 	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
@@ -52,6 +53,7 @@ type Server struct {
 	ReliabilityService proxy.ReliabilityService
 	TemporalClient     *temporal.Client
 	CredentialService  *credentials.Service
+	IdentityService    *identity.Service
 	inProcessGRPC      *registrygrpc.Server
 }
 
@@ -159,6 +161,16 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		}
 	}
 
+	// Initialize Identity, User Accounts, and Tenant Membership Service
+	var identStore identity.Store
+	if db != nil {
+		identStore = identity.NewPostgresStore(db)
+	} else {
+		identStore = identity.NewMemoryStore()
+	}
+	identSvc := identity.NewService(identStore, jwtValidator)
+	identHandler := identity.NewHandler(identSvc, gatewayhttp.WriteErrorResponse)
+
 	var grpcClient ardav1.AgentRegistryServiceClient
 	if regClient != nil {
 		grpcClient = regClient.Client()
@@ -171,6 +183,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		ReliabilityService: relSvc,
 		TemporalClient:     tempClient,
 		CredentialHandler:  credHandler,
+		IdentityHandler:    identHandler,
 	})
 
 	return &Server{
@@ -181,6 +194,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		ReliabilityService: relSvc,
 		TemporalClient:     tempClient,
 		CredentialService:  credSvc,
+		IdentityService:    identSvc,
 		inProcessGRPC:      inProcessGRPC,
 	}, nil
 }

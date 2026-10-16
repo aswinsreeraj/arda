@@ -20,6 +20,7 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/credentials"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
+	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
@@ -662,11 +663,27 @@ func TestGateway_GetAgentVersionEndpoint(t *testing.T) {
 		name string
 		role auth.Role
 	}{
-		{"super_admin", auth.RoleSuperAdmin},
 		{"company_admin", auth.RoleCompanyAdmin},
 		{"agent_developer", auth.RoleAgentDeveloper},
 		{"reviewer", auth.RoleReviewer},
 	}
+
+	t.Run("super_admin is denied reading agent version per RBAC matrix", func(t *testing.T) {
+		id := auth.Identity{
+			UserID:   "user-super_admin",
+			TenantID: tenantID,
+			Role:     auth.RoleSuperAdmin,
+		}
+		tok, err := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+		if err != nil {
+			t.Fatalf("failed to generate token: %v", err)
+		}
+
+		resp, _ := doRequest(ts, "GET", path, tok, nil, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden for super_admin reading agent version, got %d", resp.StatusCode)
+		}
+	})
 
 	for _, tc := range roles {
 		t.Run(fmt.Sprintf("role %s is authorized to read agent version", tc.name), func(t *testing.T) {
@@ -836,15 +853,38 @@ func TestGateway_AgentExecutionEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("3. authorized roles (super_admin, company_admin, agent_developer) are permitted", func(t *testing.T) {
+	t.Run("3. authorized roles (company_admin, agent_developer) are permitted", func(t *testing.T) {
 		allowedRoles := []struct {
 			name string
 			role auth.Role
 		}{
-			{"super_admin", auth.RoleSuperAdmin},
 			{"company_admin", auth.RoleCompanyAdmin},
 			{"agent_developer", auth.RoleAgentDeveloper},
 		}
+
+		t.Run("super_admin is denied agent execution per RBAC matrix", func(t *testing.T) {
+			regMock := &mockGatewayRegistryService{
+				getLatestPublishedVersionFn: func(ctx context.Context, tID, aID uuid.UUID) (*domain.AgentVersion, error) {
+					return publishedVer, nil
+				},
+			}
+			tempMock := &mockTemporalWorkflowDispatcher{}
+			gw := createExecutionTestGateway(t, regMock, tempMock)
+			ts := httptest.NewServer(gw)
+			defer ts.Close()
+
+			id := auth.Identity{
+				UserID:   "user-super_admin",
+				TenantID: tenantID,
+				Role:     auth.RoleSuperAdmin,
+			}
+			tok, _ := auth.GenerateTestToken(id, getTestConfig(), time.Hour)
+
+			resp, _ := doRequest(ts, "POST", path, tok, nil, map[string]any{"input": map[string]any{"query": "run"}})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("expected 403 Forbidden for super_admin execute, got %d", resp.StatusCode)
+			}
+		})
 
 		for _, tc := range allowedRoles {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1386,12 +1426,17 @@ func createGRPCTestGateway(t *testing.T, regStore store.Store, vStore vault.Secr
 		credHandler = credentials.NewHandler(credSvc, gatewayhttp.WriteErrorResponse)
 	}
 
+	identStore := identity.NewMemoryStore()
+	identSvc := identity.NewService(identStore, val)
+	identHandler := identity.NewHandler(identSvc, gatewayhttp.WriteErrorResponse)
+
 	gw := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
-		JWTValidator:       val,
-		RateLimiter:        ratelimit.NewLimiter(ratelimit.Config{Enabled: false}),
-		RegistryClient:     regClient,
-		CredentialHandler:  credHandler,
-		TemporalClient:     tempDispatcher,
+		JWTValidator:      val,
+		RateLimiter:       ratelimit.NewLimiter(ratelimit.Config{Enabled: false}),
+		RegistryClient:    regClient,
+		CredentialHandler: credHandler,
+		IdentityHandler:   identHandler,
+		TemporalClient:    tempDispatcher,
 	})
 
 	cleanup := func() {
@@ -1584,6 +1629,12 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 	defer ts.Close()
 
 	tenantID := uuid.New()
+	adminToken, _ := auth.GenerateTestToken(auth.Identity{
+		UserID:   "admin-1",
+		TenantID: tenantID,
+		Role:     auth.RoleCompanyAdmin,
+	}, getTestConfig(), time.Hour)
+
 	devToken, _ := auth.GenerateTestToken(auth.Identity{
 		UserID:   "dev-1",
 		TenantID: tenantID,
@@ -1596,13 +1647,19 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		Role:     auth.RoleReviewer,
 	}, getTestConfig(), time.Hour)
 
-	// 1. Save Mock LLM Credential
+	superAdminToken, _ := auth.GenerateTestToken(auth.Identity{
+		UserID:   "super-1",
+		TenantID: tenantID,
+		Role:     auth.RoleSuperAdmin,
+	}, getTestConfig(), time.Hour)
+
+	// 1. Save Mock LLM Credential as company_admin (full access)
 	llmReq := map[string]any{
 		"category":     "llm",
 		"provider":     "openai",
 		"secret_value": "mock-llm-key-not-real",
 	}
-	resp, body := doRequest(ts, "POST", "/api/v1/credentials", devToken, nil, llmReq)
+	resp, body := doRequest(ts, "POST", "/api/v1/credentials", adminToken, nil, llmReq)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created on save LLM credential, got %d: %s", resp.StatusCode, string(body))
 	}
@@ -1623,13 +1680,13 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("unexpected category/provider: %s/%s", llmCred.Category, llmCred.Provider)
 	}
 
-	// 2. Save Mock MCP Credential
+	// 2. Save Mock MCP Credential as company_admin
 	mcpReq := map[string]any{
 		"category":     "mcp",
 		"provider":     "database-mcp",
 		"secret_value": "mock-mcp-token-not-real",
 	}
-	resp, body = doRequest(ts, "POST", "/api/v1/credentials", devToken, nil, mcpReq)
+	resp, body = doRequest(ts, "POST", "/api/v1/credentials", adminToken, nil, mcpReq)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created on save MCP credential, got %d: %s", resp.StatusCode, string(body))
 	}
@@ -1640,10 +1697,21 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 	var mcpCred credentials.Credential
 	_ = json.Unmarshal(body, &mcpCred)
 
-	// 3. List Credentials
+	// 3. Verify Agent Developer has read-only access (can list & get, but CANNOT create or delete)
+	resp, _ = doRequest(ts, "POST", "/api/v1/credentials", devToken, nil, mcpReq)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when agent_developer creates credential, got %d", resp.StatusCode)
+	}
+
+	resp, _ = doRequest(ts, "DELETE", fmt.Sprintf("/api/v1/credentials/%s", mcpCred.ID), devToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when agent_developer deletes credential, got %d", resp.StatusCode)
+	}
+
+	// Developer can list credentials (read-only per matrix)
 	resp, body = doRequest(ts, "GET", "/api/v1/credentials", devToken, nil, nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK on list credentials, got %d: %s", resp.StatusCode, string(body))
+		t.Fatalf("expected 200 OK on list credentials for developer, got %d: %s", resp.StatusCode, string(body))
 	}
 	var listResp struct {
 		Credentials []credentials.Credential `json:"credentials"`
@@ -1655,17 +1723,17 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 2 credentials in list, got %d", len(listResp.Credentials))
 	}
 
-	// 4. Get Credential by ID
+	// 4. Developer can get Credential by ID
 	resp, body = doRequest(ts, "GET", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), devToken, nil, nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK on get credential by ID, got %d: %s", resp.StatusCode, string(body))
+		t.Fatalf("expected 200 OK on get credential by ID for developer, got %d: %s", resp.StatusCode, string(body))
 	}
 	if strings.Contains(string(body), "mock-llm-key-not-real") {
 		t.Fatalf("SECURITY VIOLATION: raw secret leaked in get credential response!")
 	}
 
-	// 5. Verify Credential
-	resp, body = doRequest(ts, "POST", fmt.Sprintf("/api/v1/credentials/%s/verify", llmCred.ID), devToken, nil, nil)
+	// 5. Verify Credential (managed action, allowed for company_admin)
+	resp, body = doRequest(ts, "POST", fmt.Sprintf("/api/v1/credentials/%s/verify", llmCred.ID), adminToken, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK on verify credential, got %d: %s", resp.StatusCode, string(body))
 	}
@@ -1677,18 +1745,28 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected credential to be verified, got false")
 	}
 
-	// 6. Reviewer is not authorized to manage credentials (RBAC check)
+	// 6. Reviewer is denied on credentials (-)
 	resp, _ = doRequest(ts, "POST", "/api/v1/credentials", revToken, nil, llmReq)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 Forbidden when reviewer manages credentials, got %d", resp.StatusCode)
+		t.Fatalf("expected 403 Forbidden when reviewer creates credential, got %d", resp.StatusCode)
+	}
+	resp, _ = doRequest(ts, "GET", "/api/v1/credentials", revToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when reviewer lists credentials, got %d", resp.StatusCode)
+	}
+
+	// Super Admin is denied on credentials (-)
+	resp, _ = doRequest(ts, "GET", "/api/v1/credentials", superAdminToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when super_admin lists credentials, got %d", resp.StatusCode)
 	}
 
 	// 7. Cross-Tenant Denial: Tenant B cannot access or delete Tenant A's credentials
 	tenantB := uuid.New()
 	tenantBToken, _ := auth.GenerateTestToken(auth.Identity{
-		UserID:   "dev-b",
+		UserID:   "admin-b",
 		TenantID: tenantB,
-		Role:     auth.RoleAgentDeveloper,
+		Role:     auth.RoleCompanyAdmin,
 	}, getTestConfig(), time.Hour)
 
 	resp, _ = doRequest(ts, "GET", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), tenantBToken, nil, nil)
@@ -1701,14 +1779,14 @@ func TestGateway_CredentialManagement_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 404 Not Found when Tenant B deletes Tenant A's credential, got %d", resp.StatusCode)
 	}
 
-	// 8. Delete Credential as Tenant A
-	resp, _ = doRequest(ts, "DELETE", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), devToken, nil, nil)
+	// 8. Delete Credential as Tenant A company_admin
+	resp, _ = doRequest(ts, "DELETE", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), adminToken, nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK on delete credential, got %d", resp.StatusCode)
 	}
 
 	// Subsequent lookup should return 404
-	resp, _ = doRequest(ts, "GET", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), devToken, nil, nil)
+	resp, _ = doRequest(ts, "GET", fmt.Sprintf("/api/v1/credentials/%s", llmCred.ID), adminToken, nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found after deleting credential, got %d", resp.StatusCode)
 	}
@@ -1821,5 +1899,258 @@ func TestGateway_AgentExecution_WithGRPCRegistry(t *testing.T) {
 	}
 	if execResp.AgentVersionID != verID {
 		t.Fatalf("expected agentVersionID %s, got %s", verID, execResp.AgentVersionID)
+	}
+}
+
+func TestGateway_Identity_RegisterAndLogin(t *testing.T) {
+	regStore := store.NewMemoryStore()
+	gw, _, cleanup := createGRPCTestGateway(t, regStore, nil, nil, nil)
+	defer cleanup()
+
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	// 1. Register User
+	regReq := map[string]any{
+		"email":        "  alice@corp.com ",
+		"password":     "securePassword123",
+		"display_name": "Alice Developer",
+	}
+	resp, body := doRequest(ts, "POST", "/api/v1/auth/register", "", nil, regReq)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created on registration, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var regUser identity.SafeUser
+	if err := json.Unmarshal(body, &regUser); err != nil {
+		t.Fatalf("failed to decode register response: %v", err)
+	}
+	if regUser.Email != "alice@corp.com" {
+		t.Fatalf("expected normalized email alice@corp.com, got %s", regUser.Email)
+	}
+	if strings.Contains(string(body), "password") {
+		t.Fatalf("password hash leaked in response: %s", string(body))
+	}
+
+	// 2. Duplicate registration returns 409 Conflict
+	resp, _ = doRequest(ts, "POST", "/api/v1/auth/register", "", nil, regReq)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict on duplicate email, got %d", resp.StatusCode)
+	}
+
+	// 3. Login before any tenant membership returns 403 Forbidden
+	loginReq := map[string]any{
+		"email":    "alice@corp.com",
+		"password": "securePassword123",
+	}
+	resp, body = doRequest(ts, "POST", "/api/v1/auth/login", "", nil, loginReq)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden before tenant membership, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 4. Invalid password returns 401 Unauthorized
+	badLogin := map[string]any{
+		"email":    "alice@corp.com",
+		"password": "wrongPassword",
+	}
+	resp, _ = doRequest(ts, "POST", "/api/v1/auth/login", "", nil, badLogin)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized on bad password, got %d", resp.StatusCode)
+	}
+}
+
+func TestGateway_Identity_TenantProvisioningAndMembershipLifecycle(t *testing.T) {
+	regStore := store.NewMemoryStore()
+	gw, val, cleanup := createGRPCTestGateway(t, regStore, nil, nil, nil)
+	defer cleanup()
+
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	// 1. One-step tenant registration: creates tenant, company admin user, and membership all in one go
+	regTenantReq := map[string]any{
+		"company_name": "Acme Innovations",
+		"email":        "admin@org.com",
+		"password":     "adminPassword123",
+		"display_name": "Admin User",
+	}
+	resp, body := doRequest(ts, "POST", "/api/v1/tenants/register", "", nil, regTenantReq)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 on 1-step tenant registration, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var regTenantRes identity.RegisterTenantResponse
+	if err := json.Unmarshal(body, &regTenantRes); err != nil {
+		t.Fatalf("failed to decode register tenant response: %v", err)
+	}
+	tenantID := regTenantRes.Tenant.ID
+	adminTenantToken := regTenantRes.AccessToken
+
+	if regTenantRes.Membership.Role != auth.RoleCompanyAdmin {
+		t.Fatalf("expected company_admin role on 1-step registration, got %s", regTenantRes.Membership.Role)
+	}
+
+	// Verify company_admin cannot invoke /api/v1/tenants directly (per RBAC matrix: company_admin has - for /tenants)
+	resp, _ = doRequest(ts, "POST", "/api/v1/tenants", adminTenantToken, nil, map[string]any{"name": "Unauthorized Org"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for company_admin on /api/v1/tenants, got %d", resp.StatusCode)
+	}
+
+	// Verify super_admin can invoke /api/v1/tenants directly (per RBAC matrix: super_admin has full for /tenants)
+	superAdminToken, _ := auth.GenerateTestToken(auth.Identity{
+		UserID:   regTenantRes.User.ID.String(),
+		TenantID: uuid.New(),
+		Role:     auth.RoleSuperAdmin,
+	}, val.Config(), time.Hour)
+	resp, body = doRequest(ts, "POST", "/api/v1/tenants", superAdminToken, nil, map[string]any{"name": "Super Admin Provisioned Tenant"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 on super_admin create tenant, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 2. Register a Developer user account
+	devEmail := "developer@org.com"
+	resp, body = doRequest(ts, "POST", "/api/v1/auth/register", "", nil, map[string]any{
+		"email":        devEmail,
+		"password":     "devPassword123",
+		"display_name": "Dev User",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("failed to register dev user: %s", string(body))
+	}
+	var devUser identity.SafeUser
+	_ = json.Unmarshal(body, &devUser)
+
+	// 3. Add Developer as tenant member using tenant admin token
+	addMemReq := map[string]any{
+		"user_id": devUser.ID.String(),
+		"role":    string(auth.RoleAgentDeveloper),
+	}
+	resp, body = doRequest(ts, "POST", fmt.Sprintf("/api/v1/tenants/%s/members", tenantID), adminTenantToken, nil, addMemReq)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 on add member, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 4. Developer can now log in via POST /api/v1/auth/login and receives access_token!
+	loginResp, loginBody := doRequest(ts, "POST", "/api/v1/auth/login", "", nil, map[string]any{
+		"email":    devEmail,
+		"password": "devPassword123",
+	})
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on login, got %d: %s", loginResp.StatusCode, string(loginBody))
+	}
+
+	var loginData identity.LoginResponse
+	if err := json.Unmarshal(loginBody, &loginData); err != nil {
+		t.Fatalf("failed to decode login response: %v", err)
+	}
+	if loginData.Role != auth.RoleAgentDeveloper {
+		t.Fatalf("expected role agent_developer, got %s", loginData.Role)
+	}
+	if loginData.ActiveTenantID != tenantID {
+		t.Fatalf("expected tenant %s, got %s", tenantID, loginData.ActiveTenantID)
+	}
+	devAccessToken := loginData.AccessToken
+
+	// 5. Developer uses login token to call GET /api/v1/auth/me
+	meResp, meBody := doRequest(ts, "GET", "/api/v1/auth/me", devAccessToken, nil, nil)
+	if meResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on /auth/me, got %d: %s", meResp.StatusCode, string(meBody))
+	}
+	var meData identity.CurrentUserResponse
+	_ = json.Unmarshal(meBody, &meData)
+	if meData.User.Email != devEmail {
+		t.Fatalf("expected email %s, got %s", devEmail, meData.User.Email)
+	}
+	if meData.Role != auth.RoleAgentDeveloper {
+		t.Fatalf("expected role agent_developer, got %s", meData.Role)
+	}
+
+	// 5b. Users (/users) endpoint group checks per RBAC matrix:
+	// company_admin: full (own tenant)
+	resp, body = doRequest(ts, "GET", "/api/v1/users", adminTenantToken, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on admin GET /api/v1/users, got %d: %s", resp.StatusCode, string(body))
+	}
+	// agent_developer: self only
+	resp, body = doRequest(ts, "GET", "/api/v1/users", devAccessToken, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on dev GET /api/v1/users, got %d: %s", resp.StatusCode, string(body))
+	}
+	resp, _ = doRequest(ts, "GET", fmt.Sprintf("/api/v1/users/%s", regTenantRes.User.ID), devAccessToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when dev views other user, got %d", resp.StatusCode)
+	}
+	resp, _ = doRequest(ts, "GET", "/api/v1/users/me", devAccessToken, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on dev GET /api/v1/users/me, got %d", resp.StatusCode)
+	}
+	// super_admin: - (denied)
+	resp, _ = doRequest(ts, "GET", "/api/v1/users", superAdminToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for super_admin on /api/v1/users, got %d", resp.StatusCode)
+	}
+
+	// 6. Developer uses login token to create an agent
+	createAgentReq := map[string]any{
+		"name":            "Support Agent",
+		"prompt_template": "Help users",
+	}
+	resp, body = doRequest(ts, "POST", "/api/v1/agents", devAccessToken, nil, createAgentReq)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 creating agent using login token, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 7. Developer cannot publish a version (enforces RBAC!)
+	resp, _ = doRequest(ts, "POST", fmt.Sprintf("/api/v1/agents/%s/versions/%s/publish", uuid.New(), uuid.New()), devAccessToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for developer publishing version, got %d", resp.StatusCode)
+	}
+
+	// 8. Developer cannot manage members
+	resp, _ = doRequest(ts, "POST", fmt.Sprintf("/api/v1/tenants/%s/members", tenantID), devAccessToken, nil, addMemReq)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for developer managing members, got %d", resp.StatusCode)
+	}
+
+	// 9. Admin lists members
+	resp, body = doRequest(ts, "GET", fmt.Sprintf("/api/v1/tenants/%s/members", tenantID), adminTenantToken, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 listing members, got %d: %s", resp.StatusCode, string(body))
+	}
+	var memberList struct {
+		Members []identity.MemberInfo `json:"members"`
+	}
+	_ = json.Unmarshal(body, &memberList)
+	if len(memberList.Members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(memberList.Members))
+	}
+
+	// 10. Protection against removing the last active admin
+	adminUserID := regTenantRes.User.ID
+	resp, _ = doRequest(ts, "DELETE", fmt.Sprintf("/api/v1/tenants/%s/members/%s", tenantID, adminUserID), adminTenantToken, nil, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict when deleting last admin, got %d", resp.StatusCode)
+	}
+
+	// 11. Cross-tenant access denial
+	otherTenantID := uuid.New()
+	resp, _ = doRequest(ts, "GET", fmt.Sprintf("/api/v1/tenants/%s/members", otherTenantID), adminTenantToken, nil, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for cross-tenant access, got %d", resp.StatusCode)
+	}
+
+	// 12. Successfully remove developer member
+	resp, _ = doRequest(ts, "DELETE", fmt.Sprintf("/api/v1/tenants/%s/members/%s", tenantID, devUser.ID), adminTenantToken, nil, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content when deleting developer member, got %d", resp.StatusCode)
+	}
+
+	// 13. Deleted developer can no longer log in
+	loginResp, _ = doRequest(ts, "POST", "/api/v1/auth/login", "", nil, map[string]any{
+		"email":    devEmail,
+		"password": "devPassword123",
+	})
+	if loginResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden on login after membership removal, got %d", loginResp.StatusCode)
 	}
 }

@@ -77,35 +77,64 @@ API Gateway v1 acts as the governed single public HTTP entry point for the ARDA 
 
 ---
 
-## 3. Authorization Matrix
+## 3. Authorization Matrix & Platform Roles
 
-ARDA enforces role-based access control (RBAC) via a centralized policy layer ([`services/gateway/auth/policy.go`](file:///home/aswin/second-project/arda/services/gateway/auth/policy.go)):
+ARDA enforces role-based access control (RBAC) via a centralized policy layer ([`services/gateway/auth/policy.go`](file:///home/aswin/second-project/arda/services/gateway/auth/policy.go)).
+
+### Endpoint Group Permissions Matrix
+
+| Endpoint Group | `super_admin` | `company_admin` | `agent_developer` | `reviewer` |
+|---|:---:|:---:|:---:|:---:|
+| **Tenants (`/tenants`)** | full | - *(registers via `/tenants/register`)* | - | - |
+| **Users (`/users`)** | - | full *(own tenant)* | self only | self only |
+| **Agents (`/agents`)** | - | full | full | read-only |
+| **MCP Servers / LLM Keys** | - | full | read-only | - |
+| **Executions (`/executions`)** | - | read | read + create *(via API key)* | read |
+| **Reviews (`/reviews`)** | - | read + resolve | read | read + resolve |
+| **Audit (`/audit`)** | - | read *(own tenant)* | read *(own tenant)* | read *(own tenant)* |
+
+### Route-Level Mapping
 
 | Action | Route | `super_admin` | `company_admin` | `agent_developer` | `reviewer` |
 |---|---|:---:|:---:|:---:|:---:|
-| `agent:create` | `POST /api/v1/agents` | ✅ | ✅ | ✅ | ❌ |
-| `agent:read` | `GET /api/v1/agents` | ✅ | ✅ | ✅ | ✅ |
-| `agent:read` | `GET /api/v1/agents/{id}` | ✅ | ✅ | ✅ | ✅ |
-| `agent:read` | `GET /api/v1/agents/{id}/versions/latest` *(canonical)* | ✅ | ✅ | ✅ | ✅ |
-| `agent:read` | `GET /api/v1/agents/{id}/versions/published` *(alias)* | ✅ | ✅ | ✅ | ✅ |
-| `agent:read` | `GET /api/v1/agents/{id}/versions/published/latest` *(alias)* | ✅ | ✅ | ✅ | ✅ |
-| `agent:read` | `GET /api/v1/agents/{id}/versions/{versionId}` | ✅ | ✅ | ✅ | ✅ |
-| `version:create` | `POST /api/v1/agents/{id}/versions` | ✅ | ✅ | ✅ | ❌ |
-| `version:update` | `PUT /api/v1/agents/{id}/versions/{versionId}` | ✅ | ✅ | ✅ | ❌ |
-| `version:publish` | `POST /api/v1/agents/{id}/versions/{versionId}/publish` | ✅ | ✅ | ❌ | ✅ |
-| `version:delete` | `DELETE /api/v1/agents/{id}/versions/{versionId}` | ✅ | ✅ | ❌ | ❌ |
-| `agent:execute` | `POST /api/v1/agents/{id}/execute` | ✅ | ✅ | ✅ | ❌ |
-| `reliability:gate`| `POST /api/v1/reliability/gate` | ✅ | ✅ | ✅ | ✅ |
-| `credential:manage`| `POST /api/v1/credentials` | ✅ | ✅ | ✅ | ❌ |
-| `credential:manage`| `DELETE /api/v1/credentials/{id}` | ✅ | ✅ | ✅ | ❌ |
-| `credential:manage`| `POST /api/v1/credentials/{id}/verify` | ✅ | ✅ | ✅ | ❌ |
-| `credential:read` | `GET /api/v1/credentials` | ✅ | ✅ | ✅ | ❌ |
-| `credential:read` | `GET /api/v1/credentials/{id}` | ✅ | ✅ | ✅ | ❌ |
+| **Public Registration** | `POST /api/v1/tenants/register` | ✅ (Public) | ✅ (Public) | ✅ (Public) | ✅ (Public) |
+| **Public Login** | `POST /api/v1/auth/login` | ✅ (Public) | ✅ (Public) | ✅ (Public) | ✅ (Public) |
+| `tenant:create` | `POST /api/v1/tenants` | ✅ | ❌ | ❌ | ❌ |
+| `users:read` | `GET /api/v1/users` | ❌ | ✅ *(own tenant)* | ✅ *(self only)* | ✅ *(self only)* |
+| `users:read` | `GET /api/v1/users/{userId}` | ❌ | ✅ *(own tenant)* | ✅ *(self only)* | ✅ *(self only)* |
+| `users:read` | `GET /api/v1/auth/me` | ✅ *(self)* | ✅ *(self)* | ✅ *(self)* | ✅ *(self)* |
+| `tenant:member:manage` | `POST /api/v1/users` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `tenant:member:manage` | `PATCH /api/v1/users/{userId}` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `tenant:member:manage` | `DELETE /api/v1/users/{userId}` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `tenant:member:manage` | `POST /api/v1/tenants/{tenantId}/members` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `tenant:member:manage` | `PATCH /api/v1/tenants/{tenantId}/members/{userId}` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `tenant:member:manage` | `DELETE /api/v1/tenants/{tenantId}/members/{userId}` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `tenant:member:read` | `GET /api/v1/tenants/{tenantId}/members` | ❌ | ✅ *(own tenant)* | ❌ | ❌ |
+| `agent:create` | `POST /api/v1/agents` | ❌ | ✅ | ✅ | ❌ |
+| `agent:read` | `GET /api/v1/agents` | ❌ | ✅ | ✅ | ✅ |
+| `agent:read` | `GET /api/v1/agents/{id}` | ❌ | ✅ | ✅ | ✅ |
+| `agent:read` | `GET /api/v1/agents/{id}/versions/latest` *(canonical)* | ❌ | ✅ | ✅ | ✅ |
+| `agent:read` | `GET /api/v1/agents/{id}/versions/published` *(alias)* | ❌ | ✅ | ✅ | ✅ |
+| `agent:read` | `GET /api/v1/agents/{id}/versions/published/latest` *(alias)* | ❌ | ✅ | ✅ | ✅ |
+| `agent:read` | `GET /api/v1/agents/{id}/versions/{versionId}` | ❌ | ✅ | ✅ | ✅ |
+| `version:create` | `POST /api/v1/agents/{id}/versions` | ❌ | ✅ | ✅ | ❌ |
+| `version:update` | `PUT /api/v1/agents/{id}/versions/{versionId}` | ❌ | ✅ | ✅ | ❌ |
+| `version:publish` | `POST /api/v1/agents/{id}/versions/{versionId}/publish` | ❌ | ✅ | ❌ | ✅ |
+| `version:delete` | `DELETE /api/v1/agents/{id}/versions/{versionId}` | ❌ | ✅ | ❌ | ❌ |
+| `agent:execute` | `POST /api/v1/agents/{id}/execute` | ❌ | ✅ | ✅ | ❌ |
+| `credential:manage`| `POST /api/v1/credentials` | ❌ | ✅ | ❌ | ❌ |
+| `credential:manage`| `DELETE /api/v1/credentials/{id}` | ❌ | ✅ | ❌ | ❌ |
+| `credential:manage`| `POST /api/v1/credentials/{id}/verify` | ❌ | ✅ | ❌ | ❌ |
+| `credential:read` | `GET /api/v1/credentials` | ❌ | ✅ | ✅ | ❌ |
+| `credential:read` | `GET /api/v1/credentials/{id}` | ❌ | ✅ | ✅ | ❌ |
+| `reliability:gate`| `POST /api/v1/reliability/gate` | ❌ | ✅ | ✅ | ✅ |
 
 ### Governance Rules
-1. **Separation of Duties on Publication:** `agent_developer` can create, configure, test, and update draft versions, but cannot publish versions. Only `reviewer`, `company_admin`, or `super_admin` can publish versions.
-2. **Reviewer Read-Only Boundary:** `reviewer` evaluates and publishes draft versions and gates executions, but cannot create agents, edit drafts, delete drafts, trigger executions, or manage credentials.
-3. **Published Version Immutability:** Once published, versions are immutable. Neither developers nor admins can edit or delete a published version (returns `409 Conflict`).
+1. **One-Step Company Tenant Registration:** Company admins self-register their company tenant via public `POST /api/v1/tenants/register`. This provision the tenant, human user account, and `company_admin` membership atomically in one transaction, immediately returning access tokens without requiring pre-existing accounts.
+2. **Platform vs. Tenant Scope Separation:** `super_admin` operates exclusively at the platform infrastructure level managing tenants (`/tenants`), but cannot access or tamper with tenant-scoped users, agents, credentials, executions, or audit trails.
+3. **Separation of Duties on Publication:** `agent_developer` can create, configure, test, and update draft versions, but cannot publish versions. Only `reviewer` or `company_admin` can publish versions.
+4. **Credential Isolation:** Only `company_admin` can create, modify, verify, or delete Vault credentials (MCP keys / LLM tokens). `agent_developer` has read-only access to inspect configured tools, while `reviewer` and `super_admin` have zero credential access.
+5. **Published Version Immutability:** Once published, versions are immutable. Neither developers nor admins can edit or delete a published version (returns `409 Conflict`).
 
 ---
 
@@ -164,7 +193,45 @@ The Gateway provides endpoints for managing mock LLM provider and MCP server cre
 
 ---
 
-## 7. Standardized Error Format & Observability
+## 7. User Accounts, Authentication & Tenant Memberships
+
+ARDA provides database-backed user identity, bcrypt password hashing, and tenant-scoped memberships.
+
+### Endpoints
+
+- `POST /api/v1/auth/register` (Public, rate-limited):
+  - Request: `{"email": "string", "password": "string (min 8 chars)", "display_name": "string"}`
+  - Email is strictly normalized (lowercase, trimmed) and validated. Uniqueness is enforced at database level (`idx_app_users_email_lower`).
+  - Passwords are encrypted using memory-hard `bcrypt` hashing before storage.
+  - Returns `201 Created` with safe user information (never returns password hashes).
+- `POST /api/v1/auth/login` (Public, rate-limited):
+  - Request: `{"email": "string", "password": "string", "tenant_id": "optional UUID"}`
+  - Normalizes email, compares bcrypt hash, and verifies user account is active (`status == 'active'`).
+  - Resolves active tenant membership. If `tenant_id` is specified, verifies that the user is an active member of that tenant; otherwise defaults to their first active membership.
+  - Derives role and tenant context strictly from trusted database records (never client-supplied values).
+  - Issues a signed access JWT (`HS256`, 1-hour expiration) with claims: `sub`, `tenant_id`, `role`, `iss`, `aud`, `exp`.
+- `GET /api/v1/auth/me` (Protected):
+  - Returns the authenticated user's profile, active tenant details, active role, and list of all memberships.
+- `POST /api/v1/tenants` (Protected, `tenant:create`):
+  - Request: `{"name": "string"}`
+  - Provisions a new tenant and sets the caller as the initial `company_admin` within a single PostgreSQL transaction.
+- `POST /api/v1/tenants/:tenantId/members` (Protected, `tenant:member:manage`):
+  - Request: `{"user_id": "UUID", "email": "string", "role": "company_admin|agent_developer|reviewer"}`
+  - Adds an existing user account to the tenant with the designated role.
+  - Role cannot be `super_admin`.
+- `GET /api/v1/tenants/:tenantId/members` (Protected, `tenant:member:read`):
+  - Lists all members, their display names, emails, roles, and statuses for the tenant.
+- `PATCH /api/v1/tenants/:tenantId/members/:userId` (Protected, `tenant:member:manage`):
+  - Request: `{"role": "string", "status": "active|disabled"}`
+  - Updates member role or active status.
+  - Protected: Rejects any attempt to demote or deactivate the last active `company_admin` with `409 Conflict`.
+- `DELETE /api/v1/tenants/:tenantId/members/:userId` (Protected, `tenant:member:manage`):
+  - Removes a member from the tenant.
+  - Protected: Rejects any attempt to delete the last active `company_admin` with `409 Conflict`.
+
+---
+
+## 8. Standardized Error Format & Observability
 
 All error responses strictly adhere to the ARDA error format:
 
