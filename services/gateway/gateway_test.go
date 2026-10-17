@@ -1408,7 +1408,7 @@ func createGRPCTestGateway(t *testing.T, regStore store.Store, vStore vault.Secr
 		_ = grpcServer.Serve(lis)
 	}()
 
-	conn, err := grpc.DialContext(context.Background(), "bufnet",
+	conn, err := grpc.NewClient("passthrough://bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return lis.Dial()
 		}),
@@ -1851,7 +1851,7 @@ func TestGateway_AgentExecution_WithGRPCRegistry(t *testing.T) {
 		_ = grpcServer.Serve(lis)
 	}()
 
-	conn, _ := grpc.DialContext(context.Background(), "bufnet",
+	conn, _ := grpc.NewClient("passthrough://bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return lis.Dial()
 		}),

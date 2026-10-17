@@ -1,10 +1,8 @@
 package proxy
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"google.golang.org/grpc"
@@ -26,12 +24,8 @@ func NewRegistryClient(addr string) (*RegistryClient, error) {
 		return nil, ErrRegistryUnconfigured
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, addr,
+	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial registry service at %s: %w", addr, err)

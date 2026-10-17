@@ -121,7 +121,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		go func() {
 			_ = inProcessGRPC.Serve(lis)
 		}()
-		conn, err := grpc.DialContext(context.Background(), "bufnet",
+		conn, err := grpc.NewClient("passthrough://bufnet",
 			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 				return lis.Dial()
 			}),

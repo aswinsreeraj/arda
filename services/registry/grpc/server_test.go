@@ -158,7 +158,7 @@ func setupGRPCTest(t *testing.T, st store.Store) (ardav1.AgentRegistryServiceCli
 		}
 	}()
 
-	conn, err := grpc.DialContext(context.Background(), "bufnet",
+	conn, err := grpc.NewClient("passthrough://bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return lis.Dial()
 		}),
