@@ -2,11 +2,14 @@ package temporal_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/google/uuid"
+	sdktemporal "go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -104,50 +107,157 @@ func TestNoopActivity_DirectExecution(t *testing.T) {
 	}
 }
 
-func TestConfig_Defaults(t *testing.T) {
-	cfg := temporal.ConfigFromEnv()
-	if cfg.Address == "" {
-		t.Fatalf("expected default address to be non-empty")
+func TestAgentExecutionActivity_DirectExecution(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestActivityEnvironment()
+
+	var capturedInput agentruntime.ExecutionInput
+	mock := &agentruntime.MockExecutor{
+		ExecuteFunc: func(ctx context.Context, input agentruntime.ExecutionInput) (agentruntime.ExecutionResult, error) {
+			capturedInput = input
+			return agentruntime.ExecutionResult{
+				Status: agentruntime.StatusSuccess,
+				Output: map[string]any{"result": "direct execution successful"},
+			}, nil
+		},
 	}
-	if cfg.Namespace == "" {
-		t.Fatalf("expected default namespace to be non-empty")
+
+	rt, err := agentruntime.New(mock)
+	if err != nil {
+		t.Fatalf("failed to create runtime: %v", err)
 	}
-	if cfg.TaskQueue == "" {
-		t.Fatalf("expected default task queue to be non-empty")
+
+	activities := temporal.NewAgentActivities(rt)
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+	payload := map[string]any{"task": "analyze"}
+
+	actInput := temporal.AgentExecutionActivityInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionInput: payload,
+	}
+
+	env.RegisterActivity(activities.AgentExecutionActivity)
+	val, err := env.ExecuteActivity(activities.AgentExecutionActivity, actInput)
+	if err != nil {
+		t.Fatalf("activity execution failed: %v", err)
+	}
+
+	var actResult temporal.AgentExecutionActivityResult
+	if err := val.Get(&actResult); err != nil {
+		t.Fatalf("failed to decode activity result: %v", err)
+	}
+
+	if actResult.Status != "SUCCESS" {
+		t.Errorf("expected status SUCCESS, got: %s", actResult.Status)
+	}
+	if actResult.Output["result"] != "direct execution successful" {
+		t.Errorf("unexpected output: %+v", actResult.Output)
+	}
+
+	// Verify the activity forwarded identifiers and payload correctly
+	if capturedInput.TenantID != tenantID {
+		t.Errorf("expected tenant ID %s, got %s", tenantID, capturedInput.TenantID)
+	}
+	if capturedInput.AgentID != agentID {
+		t.Errorf("expected agent ID %s, got %s", agentID, capturedInput.AgentID)
+	}
+	if capturedInput.AgentVersionID != versionID {
+		t.Errorf("expected agent version ID %s, got %s", versionID, capturedInput.AgentVersionID)
+	}
+	if capturedInput.Payload["task"] != "analyze" {
+		t.Errorf("expected payload task 'analyze', got %+v", capturedInput.Payload)
 	}
 }
 
-func TestClient_UnavailableServerReportsError(t *testing.T) {
-	// Attempt to start workflow on a non-listening port
-	badCfg := temporal.Config{
-		Address:   "127.0.0.1:59998",
-		Namespace: "default",
-		TaskQueue: "test-queue",
-	}
+func TestAgentExecutionActivity_ErrorPropagation(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
 
-	client, err := temporal.NewClient(badCfg)
-	if err != nil {
-		// client.Dial may fail immediately depending on network, which is also valid
-		return
-	}
-	defer client.Close()
+	t.Run("runtime execution error produces retryable application error", func(t *testing.T) {
+		env := suite.NewTestActivityEnvironment()
+		mock := &agentruntime.MockExecutor{
+			Err: errors.New("upstream LLM failure"),
+		}
+		rt, _ := agentruntime.New(mock)
+		activities := temporal.NewAgentActivities(rt)
+		env.RegisterActivity(activities.AgentExecutionActivity)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200)
-	defer cancel()
+		input := temporal.AgentExecutionActivityInput{
+			TenantID:       uuid.New(),
+			AgentID:        uuid.New(),
+			AgentVersionID: uuid.New(),
+		}
 
-	_, err = client.ExecuteNoopWorkflow(ctx, "test-wf-id", temporal.NoopWorkflowInput{
-		Message: "test",
+		_, err := env.ExecuteActivity(activities.AgentExecutionActivity, input)
+		if err == nil {
+			t.Fatalf("expected error from activity, got nil")
+		}
+
+		var appErr *sdktemporal.ApplicationError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
+		}
+		if appErr.Type() != "AgentExecutionFailure" {
+			t.Errorf("expected error type AgentExecutionFailure, got: %s", appErr.Type())
+		}
+		if appErr.NonRetryable() {
+			t.Errorf("expected execution failure to be retryable")
+		}
 	})
-	if err == nil {
-		t.Fatalf("expected error when temporal server is offline, got nil")
-	}
+
+	t.Run("invalid input produces non-retryable application error", func(t *testing.T) {
+		env := suite.NewTestActivityEnvironment()
+		rt := agentruntime.NewDefaultRuntime()
+		activities := temporal.NewAgentActivities(rt)
+		env.RegisterActivity(activities.AgentExecutionActivity)
+
+		// Missing TenantID and AgentID triggers validation error
+		input := temporal.AgentExecutionActivityInput{
+			TenantID:       uuid.Nil,
+			AgentID:        uuid.Nil,
+			AgentVersionID: uuid.Nil,
+		}
+
+		_, err := env.ExecuteActivity(activities.AgentExecutionActivity, input)
+		if err == nil {
+			t.Fatalf("expected validation error from activity, got nil")
+		}
+
+		var appErr *sdktemporal.ApplicationError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
+		}
+		if appErr.Type() != "InvalidInputError" {
+			t.Errorf("expected error type InvalidInputError, got: %s", appErr.Type())
+		}
+		if !appErr.NonRetryable() {
+			t.Errorf("expected invalid input error to be non-retryable")
+		}
+	})
 }
 
 func TestAgentExecutionWorkflow_Success(t *testing.T) {
 	suite := &testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()
 
+	mock := agentruntime.NewMockExecutor()
+	mock.Result = agentruntime.ExecutionResult{
+		Status: agentruntime.StatusSuccess,
+		Output: map[string]any{
+			"summary": "Agent successfully processed query",
+		},
+	}
+	rt, err := agentruntime.New(mock)
+	if err != nil {
+		t.Fatalf("failed to create runtime: %v", err)
+	}
+
+	agentActivities := temporal.NewAgentActivities(rt)
 	env.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+	env.RegisterActivity(agentActivities.AgentExecutionActivity)
 
 	tenantID := uuid.New()
 	agentID := uuid.New()
@@ -184,7 +294,139 @@ func TestAgentExecutionWorkflow_Success(t *testing.T) {
 	if result.AgentVersionID != versionID {
 		t.Errorf("expected agent version ID %s, got %s", versionID, result.AgentVersionID)
 	}
-	if result.Status != "COMPLETED_STUB" {
-		t.Errorf("expected status COMPLETED_STUB, got %s", result.Status)
+	if result.Status != "SUCCESS" {
+		t.Errorf("expected status SUCCESS, got %s", result.Status)
+	}
+	if result.Output == nil || result.Output["summary"] != "Agent successfully processed query" {
+		t.Errorf("expected output to contain summary, got: %+v", result.Output)
+	}
+}
+
+func TestAgentExecutionWorkflow_EscalationResult(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	mock := agentruntime.NewMockExecutor()
+	mock.Result = agentruntime.ExecutionResult{
+		Status: agentruntime.StatusEscalated,
+		Reason: "Requires human authorization",
+		Escalation: &agentruntime.EscalationInfo{
+			Reason: "Transaction value exceeds policy threshold",
+			Target: "compliance_officer",
+		},
+	}
+	rt, _ := agentruntime.New(mock)
+	agentActivities := temporal.NewAgentActivities(rt)
+
+	env.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+	env.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	input := temporal.AgentExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionInput: map[string]any{"amount": 100000},
+	}
+
+	env.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatalf("expected workflow to complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("unexpected workflow error: %v", err)
+	}
+
+	var result temporal.AgentExecutionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("failed to decode workflow result: %v", err)
+	}
+
+	if result.Status != "ESCALATED" {
+		t.Errorf("expected status ESCALATED, got %s", result.Status)
+	}
+	if result.Reason != "Requires human authorization" {
+		t.Errorf("expected reason 'Requires human authorization', got %s", result.Reason)
+	}
+	if result.Escalation == nil || result.Escalation.Target != "compliance_officer" {
+		t.Errorf("expected escalation target compliance_officer, got: %+v", result.Escalation)
+	}
+}
+
+func TestAgentExecutionWorkflow_ActivityFailurePropagation(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	mock := &agentruntime.MockExecutor{
+		Err: errors.New("simulated runtime internal error"),
+	}
+	rt, _ := agentruntime.New(mock)
+	agentActivities := temporal.NewAgentActivities(rt)
+
+	env.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+	env.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+	input := temporal.AgentExecutionInput{
+		TenantID:       uuid.New(),
+		AgentID:        uuid.New(),
+		AgentVersionID: uuid.New(),
+	}
+
+	env.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatalf("expected workflow to complete with error")
+	}
+
+	err := env.GetWorkflowError()
+	if err == nil {
+		t.Fatalf("expected workflow to fail when activity fails, but got nil")
+	}
+
+	if !strings.Contains(err.Error(), "agent activity execution failed") {
+		t.Errorf("expected error message to mention activity failure, got: %v", err)
+	}
+}
+
+func TestConfig_Defaults(t *testing.T) {
+	cfg := temporal.ConfigFromEnv()
+	if cfg.Address == "" {
+		t.Fatalf("expected default address to be non-empty")
+	}
+	if cfg.Namespace == "" {
+		t.Fatalf("expected default namespace to be non-empty")
+	}
+	if cfg.TaskQueue == "" {
+		t.Fatalf("expected default task queue to be non-empty")
+	}
+}
+
+func TestClient_UnavailableServerReportsError(t *testing.T) {
+	// Attempt to start workflow on a non-listening port
+	badCfg := temporal.Config{
+		Address:   "127.0.0.1:59998",
+		Namespace: "default",
+		TaskQueue: "test-queue",
+	}
+
+	client, err := temporal.NewClient(badCfg)
+	if err != nil {
+		// client.Dial may fail immediately depending on network, which is also valid
+		return
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200)
+	defer cancel()
+
+	_, err = client.ExecuteNoopWorkflow(ctx, "test-wf-id", temporal.NoopWorkflowInput{
+		Message: "test",
+	})
+	if err == nil {
+		t.Fatalf("expected error when temporal server is offline, got nil")
 	}
 }
