@@ -116,7 +116,7 @@ func AgentExecutionWorkflow(ctx workflow.Context, input AgentExecutionInput) (Ag
 			BackoffCoefficient:     2.0,
 			MaximumInterval:        10 * time.Second,
 			MaximumAttempts:        3,
-			NonRetryableErrorTypes: []string{"InvalidInputError"},
+			NonRetryableErrorTypes: []string{"InvalidInputError", "InvalidResultError", "PermanentExecutionError"},
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)

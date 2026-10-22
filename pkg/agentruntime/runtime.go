@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -12,12 +13,121 @@ var (
 	// ErrInvalidInput indicates that the provided ExecutionInput is invalid or missing required identifiers.
 	ErrInvalidInput = errors.New("agentruntime: invalid execution input")
 
+	// ErrInvalidResult indicates that the returned ExecutionResult has an invalid status or inconsistent fields.
+	ErrInvalidResult = errors.New("agentruntime: invalid execution result")
+
 	// ErrExecutionFailed indicates an unrecoverable or simulated runtime failure.
 	ErrExecutionFailed = errors.New("agentruntime: execution failed")
+
+	// ErrPermanent indicates an unrecoverable failure (e.g. invalid config, non-retryable provider rejection).
+	ErrPermanent = errors.New("agentruntime: permanent execution failure")
+
+	// ErrTransient indicates a temporary failure (e.g. network timeout, rate limit) that may be retried.
+	ErrTransient = errors.New("agentruntime: transient execution failure")
 
 	// ErrNilExecutor indicates that a nil executor was provided when creating a Runtime.
 	ErrNilExecutor = errors.New("agentruntime: executor cannot be nil")
 )
+
+// ErrorCategory defines the classification of a runtime failure for retry and propagation decisions.
+type ErrorCategory string
+
+const (
+	// CategoryInvalidInput denotes non-retryable input validation errors.
+	CategoryInvalidInput ErrorCategory = "INVALID_INPUT"
+
+	// CategoryInvalidResult denotes non-retryable execution result contract violations.
+	CategoryInvalidResult ErrorCategory = "INVALID_RESULT"
+
+	// CategoryPermanent denotes non-retryable runtime or provider errors.
+	CategoryPermanent ErrorCategory = "PERMANENT"
+
+	// CategoryTransient denotes retryable transient errors (network, timeouts, rate limits).
+	CategoryTransient ErrorCategory = "TRANSIENT"
+
+	// CategoryCanceled denotes context cancellation or deadline expiration.
+	CategoryCanceled ErrorCategory = "CANCELED"
+)
+
+// Classifier is implemented by custom errors to declare an error category and retryability.
+type Classifier interface {
+	ErrorCategory() ErrorCategory
+	IsRetryable() bool
+}
+
+// RuntimeError is a structured error carrying an explicit error classification category.
+type RuntimeError struct {
+	Category ErrorCategory
+	Message  string
+	Err      error
+}
+
+func (e *RuntimeError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Err)
+	}
+	return e.Message
+}
+
+func (e *RuntimeError) Unwrap() error {
+	return e.Err
+}
+
+func (e *RuntimeError) ErrorCategory() ErrorCategory {
+	return e.Category
+}
+
+func (e *RuntimeError) IsRetryable() bool {
+	return e.Category == CategoryTransient
+}
+
+// NewPermanentError constructs a non-retryable RuntimeError.
+func NewPermanentError(message string, err error) *RuntimeError {
+	return &RuntimeError{
+		Category: CategoryPermanent,
+		Message:  message,
+		Err:      err,
+	}
+}
+
+// NewTransientError constructs a retryable RuntimeError.
+func NewTransientError(message string, err error) *RuntimeError {
+	return &RuntimeError{
+		Category: CategoryTransient,
+		Message:  message,
+		Err:      err,
+	}
+}
+
+// ClassifyError inspects an error's sentinels, interfaces, and standard contexts to determine its ErrorCategory.
+func ClassifyError(err error) ErrorCategory {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return CategoryCanceled
+	}
+	if errors.Is(err, ErrInvalidInput) {
+		return CategoryInvalidInput
+	}
+	if errors.Is(err, ErrInvalidResult) {
+		return CategoryInvalidResult
+	}
+	if errors.Is(err, ErrPermanent) {
+		return CategoryPermanent
+	}
+	if errors.Is(err, ErrTransient) {
+		return CategoryTransient
+	}
+
+	var classifier Classifier
+	if errors.As(err, &classifier) {
+		return classifier.ErrorCategory()
+	}
+
+	// By default, generic execution failures are treated as transient to allow bounded retries
+	return CategoryTransient
+}
 
 // ExecutionStatus defines the outcome status of an agent execution.
 type ExecutionStatus string
@@ -32,6 +142,13 @@ const (
 	// StatusFailed denotes that execution terminated with a failure.
 	StatusFailed ExecutionStatus = "FAILED"
 )
+
+// SupportedExecutionStatuses is the set of recognized execution status constants.
+var SupportedExecutionStatuses = map[ExecutionStatus]struct{}{
+	StatusSuccess:   {},
+	StatusEscalated: {},
+	StatusFailed:    {},
+}
 
 // EscalationInfo carries structured escalation context when an agent execution cannot proceed autonomously.
 type EscalationInfo struct {
@@ -69,6 +186,31 @@ type ExecutionResult struct {
 	Escalation *EscalationInfo `json:"escalation,omitempty"`
 }
 
+// Validate enforces valid status values and structural constraints on execution results.
+func (r ExecutionResult) Validate() error {
+	if r.Status == "" {
+		return fmt.Errorf("%w: status cannot be empty", ErrInvalidResult)
+	}
+	if _, ok := SupportedExecutionStatuses[r.Status]; !ok {
+		return fmt.Errorf("%w: unsupported status %q", ErrInvalidResult, r.Status)
+	}
+
+	switch r.Status {
+	case StatusEscalated:
+		if r.Escalation == nil {
+			return fmt.Errorf("%w: escalation status requires escalation details", ErrInvalidResult)
+		}
+		if strings.TrimSpace(r.Escalation.Reason) == "" && strings.TrimSpace(r.Escalation.Target) == "" {
+			return fmt.Errorf("%w: escalation status requires non-empty reason or target", ErrInvalidResult)
+		}
+	case StatusFailed:
+		if strings.TrimSpace(r.Reason) == "" {
+			return fmt.Errorf("%w: failed status requires a non-empty explanation reason", ErrInvalidResult)
+		}
+	}
+	return nil
+}
+
 // AgentRuntime defines the high-level contract for invoking an agent.
 // It is owned by ARDA, independent of Temporal and framework-specific types,
 // enabling reuse across durable workflows and realtime execution services.
@@ -102,7 +244,7 @@ func New(executor Executor) (*Runtime, error) {
 	return &Runtime{executor: executor}, nil
 }
 
-// Run executes the agent using the injected executor after validating input and checking context.
+// Run executes the agent using the injected executor after validating input, checking context, and validating output.
 func (r *Runtime) Run(ctx context.Context, input ExecutionInput) (ExecutionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ExecutionResult{}, err
@@ -110,5 +252,15 @@ func (r *Runtime) Run(ctx context.Context, input ExecutionInput) (ExecutionResul
 	if err := input.Validate(); err != nil {
 		return ExecutionResult{}, err
 	}
-	return r.executor.Execute(ctx, input)
+
+	res, err := r.executor.Execute(ctx, input)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+
+	if err := res.Validate(); err != nil {
+		return ExecutionResult{}, err
+	}
+
+	return res, nil
 }

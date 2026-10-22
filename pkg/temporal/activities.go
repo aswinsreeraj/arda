@@ -66,6 +66,7 @@ type AgentExecutionActivityResult struct {
 // AgentActivities encapsulates activities that invoke an injected AgentRuntime.
 type AgentActivities struct {
 	runtime agentruntime.AgentRuntime
+	logger  log.Logger
 }
 
 // NewAgentActivities constructs an AgentActivities instance with the provided AgentRuntime.
@@ -79,29 +80,33 @@ func NewAgentActivities(runtime agentruntime.AgentRuntime) *AgentActivities {
 	}
 }
 
+// SetLogger configures an explicit logger on AgentActivities (useful for testing or custom logging pipelines).
+func (a *AgentActivities) SetLogger(l log.Logger) {
+	a.logger = l
+}
+
 // Runtime returns the injected AgentRuntime.
 func (a *AgentActivities) Runtime() agentruntime.AgentRuntime {
 	return a.runtime
 }
 
-func tryGetActivityLogger(ctx context.Context) log.Logger {
-	defer func() {
-		_ = recover()
-	}()
+func (a *AgentActivities) getLogger(ctx context.Context) log.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
 	return activity.GetLogger(ctx)
 }
 
 // AgentExecutionActivity executes the injected AgentRuntime within a Temporal Activity.
 // It maps ARDA execution identifiers and forwards context.Context to the runtime.
-// Payloads are not logged to prevent leaking credentials or sensitive user data.
+// Raw errors and user payloads are not logged or leaked in public error messages to prevent credential leakage.
 func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input AgentExecutionActivityInput) (AgentExecutionActivityResult, error) {
-	if logger := tryGetActivityLogger(ctx); logger != nil {
-		logger.Info("Starting AgentExecutionActivity",
-			"tenant_id", input.TenantID,
-			"agent_id", input.AgentID,
-			"agent_version_id", input.AgentVersionID,
-		)
-	}
+	logger := a.getLogger(ctx)
+	logger.Info("Starting AgentExecutionActivity",
+		"tenant_id", input.TenantID,
+		"agent_id", input.AgentID,
+		"agent_version_id", input.AgentVersionID,
+	)
 
 	rtInput := agentruntime.ExecutionInput{
 		TenantID:       input.TenantID,
@@ -112,30 +117,79 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 
 	res, err := a.runtime.Run(ctx, rtInput)
 	if err != nil {
-		if logger := tryGetActivityLogger(ctx); logger != nil {
-			logger.Error("AgentExecutionActivity runtime execution failed", "error", err)
-		}
-		if errors.Is(err, agentruntime.ErrInvalidInput) {
-			return AgentExecutionActivityResult{}, temporalerr.NewNonRetryableApplicationError(
-				err.Error(),
-				"InvalidInputError",
-				err,
+		// Context cancellation / deadline exceeded: preserve cancellation semantics
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logger.Info("AgentExecutionActivity canceled",
+				"tenant_id", input.TenantID,
+				"agent_id", input.AgentID,
+				"agent_version_id", input.AgentVersionID,
 			)
+			if ctx.Err() != nil {
+				return AgentExecutionActivityResult{}, ctx.Err()
+			}
+			return AgentExecutionActivityResult{}, err
 		}
-		return AgentExecutionActivityResult{}, temporalerr.NewApplicationError(
-			fmt.Sprintf("agent runtime execution failed: %v", err),
-			"AgentExecutionFailure",
-		)
-	}
 
-	if logger := tryGetActivityLogger(ctx); logger != nil {
-		logger.Info("AgentExecutionActivity completed successfully",
+		category := agentruntime.ClassifyError(err)
+
+		// Log sanitized error category without sensitive provider or payload details
+		logger.Error("AgentExecutionActivity runtime execution failed",
+			"error_category", string(category),
 			"tenant_id", input.TenantID,
 			"agent_id", input.AgentID,
 			"agent_version_id", input.AgentVersionID,
-			"status", res.Status,
+		)
+
+		switch category {
+		case agentruntime.CategoryInvalidInput:
+			return AgentExecutionActivityResult{}, temporalerr.NewNonRetryableApplicationError(
+				"invalid execution input",
+				"InvalidInputError",
+				nil,
+			)
+		case agentruntime.CategoryInvalidResult:
+			return AgentExecutionActivityResult{}, temporalerr.NewNonRetryableApplicationError(
+				"invalid runtime execution result",
+				"InvalidResultError",
+				nil,
+			)
+		case agentruntime.CategoryPermanent:
+			return AgentExecutionActivityResult{}, temporalerr.NewNonRetryableApplicationError(
+				"permanent runtime execution failure",
+				"PermanentExecutionError",
+				nil,
+			)
+		case agentruntime.CategoryTransient:
+			fallthrough
+		default:
+			return AgentExecutionActivityResult{}, temporalerr.NewApplicationError(
+				"agent runtime execution failed due to a transient error",
+				"AgentExecutionTransientFailure",
+			)
+		}
+	}
+
+	// Validate result contract at activity boundary before returning
+	if err := res.Validate(); err != nil {
+		logger.Error("AgentExecutionActivity received invalid result from runtime",
+			"error_category", string(agentruntime.CategoryInvalidResult),
+			"tenant_id", input.TenantID,
+			"agent_id", input.AgentID,
+			"agent_version_id", input.AgentVersionID,
+		)
+		return AgentExecutionActivityResult{}, temporalerr.NewNonRetryableApplicationError(
+			"invalid runtime execution result",
+			"InvalidResultError",
+			nil,
 		)
 	}
+
+	logger.Info("AgentExecutionActivity completed successfully",
+		"tenant_id", input.TenantID,
+		"agent_id", input.AgentID,
+		"agent_version_id", input.AgentVersionID,
+		"status", string(res.Status),
+	)
 
 	return AgentExecutionActivityResult{
 		Status:     string(res.Status),

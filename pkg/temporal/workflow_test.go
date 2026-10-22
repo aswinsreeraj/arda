@@ -173,13 +173,20 @@ func TestAgentExecutionActivity_DirectExecution(t *testing.T) {
 	}
 }
 
+type testLogger struct{}
+
+func (testLogger) Debug(msg string, keyvals ...any) {}
+func (testLogger) Info(msg string, keyvals ...any)  {}
+func (testLogger) Warn(msg string, keyvals ...any)  {}
+func (testLogger) Error(msg string, keyvals ...any) {}
+
 func TestAgentExecutionActivity_ErrorPropagation(t *testing.T) {
 	suite := &testsuite.WorkflowTestSuite{}
 
-	t.Run("runtime execution error produces retryable application error", func(t *testing.T) {
+	t.Run("runtime execution error produces retryable application error without leaking raw details", func(t *testing.T) {
 		env := suite.NewTestActivityEnvironment()
 		mock := &agentruntime.MockExecutor{
-			Err: errors.New("upstream LLM failure"),
+			Err: errors.New("upstream LLM failure with sensitive token: Bearer secret-token-123"),
 		}
 		rt, _ := agentruntime.New(mock)
 		activities := temporal.NewAgentActivities(rt)
@@ -200,11 +207,47 @@ func TestAgentExecutionActivity_ErrorPropagation(t *testing.T) {
 		if !errors.As(err, &appErr) {
 			t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
 		}
-		if appErr.Type() != "AgentExecutionFailure" {
-			t.Errorf("expected error type AgentExecutionFailure, got: %s", appErr.Type())
+		if appErr.Type() != "AgentExecutionTransientFailure" {
+			t.Errorf("expected error type AgentExecutionTransientFailure, got: %s", appErr.Type())
 		}
 		if appErr.NonRetryable() {
 			t.Errorf("expected execution failure to be retryable")
+		}
+		// Verify raw error details are NOT exposed in public error message
+		if strings.Contains(appErr.Error(), "secret-token-123") {
+			t.Errorf("expected sensitive error details to be redacted from public error message, got: %s", appErr.Error())
+		}
+	})
+
+	t.Run("permanent runtime error produces non-retryable application error", func(t *testing.T) {
+		env := suite.NewTestActivityEnvironment()
+		mock := &agentruntime.MockExecutor{
+			Err: agentruntime.NewPermanentError("unauthorized model access", nil),
+		}
+		rt, _ := agentruntime.New(mock)
+		activities := temporal.NewAgentActivities(rt)
+		env.RegisterActivity(activities.AgentExecutionActivity)
+
+		input := temporal.AgentExecutionActivityInput{
+			TenantID:       uuid.New(),
+			AgentID:        uuid.New(),
+			AgentVersionID: uuid.New(),
+		}
+
+		_, err := env.ExecuteActivity(activities.AgentExecutionActivity, input)
+		if err == nil {
+			t.Fatalf("expected error from activity, got nil")
+		}
+
+		var appErr *sdktemporal.ApplicationError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
+		}
+		if appErr.Type() != "PermanentExecutionError" {
+			t.Errorf("expected error type PermanentExecutionError, got: %s", appErr.Type())
+		}
+		if !appErr.NonRetryable() {
+			t.Errorf("expected permanent error to be non-retryable")
 		}
 	})
 
@@ -235,6 +278,67 @@ func TestAgentExecutionActivity_ErrorPropagation(t *testing.T) {
 		}
 		if !appErr.NonRetryable() {
 			t.Errorf("expected invalid input error to be non-retryable")
+		}
+	})
+
+	t.Run("invalid runtime result produces non-retryable application error", func(t *testing.T) {
+		env := suite.NewTestActivityEnvironment()
+		mock := &agentruntime.MockExecutor{
+			Result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusEscalated, // missing Escalation info triggers validation error
+			},
+		}
+		// Construct directly to test activity boundary validation
+		activities := temporal.NewAgentActivities(mock)
+		env.RegisterActivity(activities.AgentExecutionActivity)
+
+		input := temporal.AgentExecutionActivityInput{
+			TenantID:       uuid.New(),
+			AgentID:        uuid.New(),
+			AgentVersionID: uuid.New(),
+		}
+
+		_, err := env.ExecuteActivity(activities.AgentExecutionActivity, input)
+		if err == nil {
+			t.Fatalf("expected error for invalid execution result, got nil")
+		}
+
+		var appErr *sdktemporal.ApplicationError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
+		}
+		if appErr.Type() != "InvalidResultError" {
+			t.Errorf("expected error type InvalidResultError, got: %s", appErr.Type())
+		}
+		if !appErr.NonRetryable() {
+			t.Errorf("expected invalid result error to be non-retryable")
+		}
+	})
+
+	t.Run("context cancellation preserves cancellation semantics", func(t *testing.T) {
+		rt := agentruntime.NewDefaultRuntime()
+		activities := temporal.NewAgentActivities(rt)
+		activities.SetLogger(testLogger{})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-canceled
+
+		input := temporal.AgentExecutionActivityInput{
+			TenantID:       uuid.New(),
+			AgentID:        uuid.New(),
+			AgentVersionID: uuid.New(),
+		}
+
+		_, err := activities.AgentExecutionActivity(ctx, input)
+		if err == nil {
+			t.Fatalf("expected error for canceled activity, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got: %T (%v)", err, err)
+		}
+		var appErr *sdktemporal.ApplicationError
+		if errors.As(err, &appErr) {
+			t.Errorf("expected cancellation not to be wrapped in ApplicationError, got: %v", appErr)
 		}
 	})
 }

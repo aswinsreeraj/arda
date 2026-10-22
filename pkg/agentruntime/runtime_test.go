@@ -102,8 +102,23 @@ func TestRuntime_PayloadSimulationFailure(t *testing.T) {
 		t.Fatalf("expected error when fail_simulation is true, got nil")
 	}
 
-	if !errors.Is(err, agentruntime.ErrExecutionFailed) {
-		t.Errorf("expected ErrExecutionFailed, got: %v", err)
+	if !errors.Is(err, agentruntime.ErrTransient) {
+		t.Errorf("expected ErrTransient, got: %v", err)
+	}
+}
+
+func TestRuntime_PayloadPermanentFailure(t *testing.T) {
+	rt := agentruntime.NewDefaultRuntime()
+	input := validExecutionInput()
+	input.Payload["fail_permanent"] = true
+
+	_, err := rt.Run(context.Background(), input)
+	if err == nil {
+		t.Fatalf("expected error when fail_permanent is true, got nil")
+	}
+
+	if !errors.Is(err, agentruntime.ErrPermanent) {
+		t.Errorf("expected ErrPermanent, got: %v", err)
 	}
 }
 
@@ -179,6 +194,177 @@ func TestRuntime_InputValidation(t *testing.T) {
 			}
 			if !errors.Is(err, tt.expectErr) {
 				t.Errorf("expected error %v, got %v", tt.expectErr, err)
+			}
+		})
+	}
+}
+
+func TestRuntime_ResultValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    agentruntime.ExecutionResult
+		expectErr bool
+	}{
+		{
+			name: "valid success",
+			result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusSuccess,
+				Output: map[string]any{"msg": "ok"},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid escalation with reason",
+			result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusEscalated,
+				Escalation: &agentruntime.EscalationInfo{
+					Reason: "need review",
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid escalation with target",
+			result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusEscalated,
+				Escalation: &agentruntime.EscalationInfo{
+					Target: "supervisor",
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "escalation missing escalation info",
+			result: agentruntime.ExecutionResult{
+				Status:     agentruntime.StatusEscalated,
+				Escalation: nil,
+			},
+			expectErr: true,
+		},
+		{
+			name: "escalation with empty reason and target",
+			result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusEscalated,
+				Escalation: &agentruntime.EscalationInfo{
+					Reason: "",
+					Target: "",
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "valid failure with reason",
+			result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusFailed,
+				Reason: "guardrail policy triggered",
+			},
+			expectErr: false,
+		},
+		{
+			name: "failed without reason",
+			result: agentruntime.ExecutionResult{
+				Status: agentruntime.StatusFailed,
+				Reason: "",
+			},
+			expectErr: true,
+		},
+		{
+			name: "empty status",
+			result: agentruntime.ExecutionResult{
+				Status: "",
+			},
+			expectErr: true,
+		},
+		{
+			name: "unsupported status",
+			result: agentruntime.ExecutionResult{
+				Status: "UNKNOWN_STATUS",
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.result.Validate()
+			if (err != nil) != tt.expectErr {
+				t.Errorf("Validate() error = %v, expectErr = %v", err, tt.expectErr)
+			}
+			if tt.expectErr && !errors.Is(err, agentruntime.ErrInvalidResult) {
+				t.Errorf("expected ErrInvalidResult, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestRuntime_RejectsInvalidResultFromExecutor(t *testing.T) {
+	mock := &agentruntime.MockExecutor{
+		Result: agentruntime.ExecutionResult{
+			Status: "INVALID_STATUS",
+		},
+	}
+	rt, err := agentruntime.New(mock)
+	if err != nil {
+		t.Fatalf("unexpected error creating runtime: %v", err)
+	}
+
+	_, err = rt.Run(context.Background(), validExecutionInput())
+	if err == nil {
+		t.Fatalf("expected error from invalid result, got nil")
+	}
+	if !errors.Is(err, agentruntime.ErrInvalidResult) {
+		t.Errorf("expected ErrInvalidResult, got %v", err)
+	}
+}
+
+func TestRuntime_ErrorClassification(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected agentruntime.ErrorCategory
+	}{
+		{
+			name:     "context canceled",
+			err:      context.Canceled,
+			expected: agentruntime.CategoryCanceled,
+		},
+		{
+			name:     "context deadline exceeded",
+			err:      context.DeadlineExceeded,
+			expected: agentruntime.CategoryCanceled,
+		},
+		{
+			name:     "invalid input error",
+			err:      agentruntime.ErrInvalidInput,
+			expected: agentruntime.CategoryInvalidInput,
+		},
+		{
+			name:     "invalid result error",
+			err:      agentruntime.ErrInvalidResult,
+			expected: agentruntime.CategoryInvalidResult,
+		},
+		{
+			name:     "permanent error",
+			err:      agentruntime.NewPermanentError("forbidden", nil),
+			expected: agentruntime.CategoryPermanent,
+		},
+		{
+			name:     "transient error",
+			err:      agentruntime.NewTransientError("rate limited", nil),
+			expected: agentruntime.CategoryTransient,
+		},
+		{
+			name:     "generic error defaults to transient",
+			err:      errors.New("something broke"),
+			expected: agentruntime.CategoryTransient,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cat := agentruntime.ClassifyError(tt.err)
+			if cat != tt.expected {
+				t.Errorf("expected category %s, got %s", tt.expected, cat)
 			}
 		})
 	}

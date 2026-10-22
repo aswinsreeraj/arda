@@ -29,15 +29,23 @@ func (m *MockExecutor) Execute(ctx context.Context, input ExecutionInput) (Execu
 
 	// Controlled failure simulation via payload flags
 	if input.Payload != nil {
+		if perm, ok := input.Payload["fail_permanent"].(bool); ok && perm {
+			return ExecutionResult{}, fmt.Errorf("%w: simulated permanent failure requested in payload", ErrPermanent)
+		}
 		if fail, ok := input.Payload["fail_simulation"].(bool); ok && fail {
-			return ExecutionResult{}, fmt.Errorf("%w: simulated failure requested in payload", ErrExecutionFailed)
+			return ExecutionResult{}, fmt.Errorf("%w: simulated failure requested in payload", ErrTransient)
 		}
 		if failStr, ok := input.Payload["fail_simulation"].(string); ok && failStr == "FAIL_SIMULATION" {
-			return ExecutionResult{}, fmt.Errorf("%w: simulated failure requested in payload", ErrExecutionFailed)
+			return ExecutionResult{}, fmt.Errorf("%w: simulated failure requested in payload", ErrTransient)
 		}
 	}
 
 	return m.Result, nil
+}
+
+// Run fulfills the AgentRuntime interface, allowing MockExecutor to be passed directly as an AgentRuntime.
+func (m *MockExecutor) Run(ctx context.Context, input ExecutionInput) (ExecutionResult, error) {
+	return m.Execute(ctx, input)
 }
 
 // NewMockExecutor creates a MockExecutor with a default successful deterministic execution result.
@@ -54,8 +62,9 @@ func NewMockExecutor() *MockExecutor {
 }
 
 // NewDefaultRuntime creates a Runtime instance backed by a deterministic MockExecutor.
-// This is suitable as the default runtime for workers in local development and testing.
+// This constructor cannot fail because its mock executor dependency is fixed and non-nil.
 func NewDefaultRuntime() *Runtime {
-	rt, _ := New(NewMockExecutor())
-	return rt
+	return &Runtime{
+		executor: NewMockExecutor(),
+	}
 }
