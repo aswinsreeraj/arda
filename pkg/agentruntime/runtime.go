@@ -107,7 +107,11 @@ func ClassifyError(err error) ErrorCategory {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return CategoryCanceled
 	}
-	if errors.Is(err, ErrInvalidInput) {
+	if errors.Is(err, ErrInvalidInput) ||
+		errors.Is(err, ErrMalformedPlaceholder) ||
+		errors.Is(err, ErrMissingPlaceholderValue) ||
+		errors.Is(err, ErrUnsupportedValueType) ||
+		errors.Is(err, ErrInvalidLLMRequest) {
 		return CategoryInvalidInput
 	}
 	if errors.Is(err, ErrInvalidResult) {
