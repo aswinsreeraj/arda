@@ -40,3 +40,6 @@ logs/
 
 # Manual verification scripts
 /scripts/manual/
+
+# Local testing UI
+/dev-ui/

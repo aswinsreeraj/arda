@@ -123,11 +123,15 @@ func (s *Service) RegisterTenant(ctx context.Context, req RegisterTenantRequest)
 		return nil, err
 	}
 
-	if len(req.Password) < 8 || len(req.Password) > 128 {
+	password := req.Password
+	if password == "" {
+		password = req.AdminPassword
+	}
+	if len(password) < 8 || len(password) > 128 {
 		return nil, ErrWeakPassword
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}

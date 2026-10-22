@@ -106,6 +106,7 @@ type RegisterTenantRequest struct {
 	AdminEmail       string `json:"admin_email"`
 	Email            string `json:"email,omitempty"`
 	Password         string `json:"password"`
+	AdminPassword    string `json:"admin_password,omitempty"`
 	DisplayName      string `json:"display_name"`
 }
 
