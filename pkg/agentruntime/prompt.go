@@ -25,7 +25,10 @@ var (
 // PromptBuilder provides deterministic prompt construction from templates and execution input payloads.
 //
 // Template Syntax:
-//   - Placeholders are wrapped in double curly braces: {{input.<path>}} or {{<path>}}.
+//   - Canonical Syntax: {{input.<path>}} (e.g. {{input.customer_id}}, {{input.user.address.city}}).
+//     This is the documented standard format for all ARDA prompt templates.
+//   - Compatibility Syntax: Bare paths without the 'input.' prefix (e.g. {{customer_id}}) are supported
+//     for backwards compatibility and resolved unambiguously against the execution input payload.
 //   - Nested keys are addressed with dot notation: {{input.customer.profile.tier}}.
 //   - Placeholders are resolved strictly against the execution input payload; arbitrary expressions or code are not executed.
 //

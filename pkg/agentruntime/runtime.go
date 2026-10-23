@@ -27,6 +27,18 @@ var (
 
 	// ErrNilExecutor indicates that a nil executor was provided when creating a Runtime.
 	ErrNilExecutor = errors.New("agentruntime: executor cannot be nil")
+
+	// ErrNilLLMClient indicates that a nil LLMClient was provided.
+	ErrNilLLMClient = errors.New("agentruntime: llm client cannot be nil")
+
+	// ErrNilConfigProvider indicates that a nil AgentConfigProvider was provided.
+	ErrNilConfigProvider = errors.New("agentruntime: configuration provider cannot be nil")
+
+	// ErrConfigurationNotFound indicates that no configuration was found for the specified tenant, agent, and version.
+	ErrConfigurationNotFound = errors.New("agentruntime: configuration not found")
+
+	// ErrInvalidConfiguration indicates that the resolved configuration failed validation.
+	ErrInvalidConfiguration = errors.New("agentruntime: invalid agent configuration")
 )
 
 // ErrorCategory defines the classification of a runtime failure for retry and propagation decisions.
@@ -117,7 +129,11 @@ func ClassifyError(err error) ErrorCategory {
 	if errors.Is(err, ErrInvalidResult) {
 		return CategoryInvalidResult
 	}
-	if errors.Is(err, ErrPermanent) {
+	if errors.Is(err, ErrPermanent) ||
+		errors.Is(err, ErrConfigurationNotFound) ||
+		errors.Is(err, ErrInvalidConfiguration) ||
+		errors.Is(err, ErrNilConfigProvider) ||
+		errors.Is(err, ErrNilLLMClient) {
 		return CategoryPermanent
 	}
 	if errors.Is(err, ErrTransient) {

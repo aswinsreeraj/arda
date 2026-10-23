@@ -354,6 +354,26 @@ func TestRuntime_ErrorClassification(t *testing.T) {
 			expected: agentruntime.CategoryTransient,
 		},
 		{
+			name:     "configuration not found error",
+			err:      agentruntime.ErrConfigurationNotFound,
+			expected: agentruntime.CategoryPermanent,
+		},
+		{
+			name:     "invalid configuration error",
+			err:      agentruntime.ErrInvalidConfiguration,
+			expected: agentruntime.CategoryPermanent,
+		},
+		{
+			name:     "nil config provider error",
+			err:      agentruntime.ErrNilConfigProvider,
+			expected: agentruntime.CategoryPermanent,
+		},
+		{
+			name:     "nil llm client error",
+			err:      agentruntime.ErrNilLLMClient,
+			expected: agentruntime.CategoryPermanent,
+		},
+		{
 			name:     "generic error defaults to transient",
 			err:      errors.New("something broke"),
 			expected: agentruntime.CategoryTransient,
