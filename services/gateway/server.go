@@ -35,6 +35,7 @@ type Config struct {
 	RateLimitBurst         int
 	RateLimitEnabled       bool
 	ReliabilityServiceAddr string
+	ExecutionServiceAddr   string
 	TemporalAddr           string
 	TemporalNamespace      string
 	TemporalTaskQueue      string
@@ -51,6 +52,7 @@ type Server struct {
 	RateLimiter        *ratelimit.Limiter
 	RegistryClient     *proxy.RegistryClient
 	ReliabilityService proxy.ReliabilityService
+	ExecutionClient    proxy.ExecutionClient
 	TemporalClient     *temporal.Client
 	CredentialService  *credentials.Service
 	IdentityService    *identity.Service
@@ -184,11 +186,22 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		grpcClient = regClient.Client()
 	}
 
+	// Initialize Execution Service client if upstream address is set
+	var execClient proxy.ExecutionClient
+	if cfg.ExecutionServiceAddr != "" {
+		ec, err := proxy.NewExecutionClient(cfg.ExecutionServiceAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize execution client: %w", err)
+		}
+		execClient = ec
+	}
+
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
 		RegistryClient:     grpcClient,
 		ReliabilityService: relSvc,
+		ExecutionClient:    execClient,
 		TemporalClient:     tempClient,
 		CredentialHandler:  credHandler,
 		IdentityHandler:    identHandler,
@@ -200,6 +213,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		RateLimiter:        limiter,
 		RegistryClient:     regClient,
 		ReliabilityService: relSvc,
+		ExecutionClient:    execClient,
 		TemporalClient:     tempClient,
 		CredentialService:  credSvc,
 		IdentityService:    identSvc,
@@ -214,6 +228,9 @@ func (s *Server) Close() error {
 	}
 	if s.ReliabilityService != nil {
 		_ = s.ReliabilityService.Close()
+	}
+	if s.ExecutionClient != nil {
+		_ = s.ExecutionClient.Close()
 	}
 	if s.TemporalClient != nil {
 		s.TemporalClient.Close()

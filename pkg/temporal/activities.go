@@ -90,10 +90,22 @@ func (a *AgentActivities) Runtime() agentruntime.AgentRuntime {
 	return a.runtime
 }
 
-func (a *AgentActivities) getLogger(ctx context.Context) log.Logger {
+type noopLogger struct{}
+
+func (noopLogger) Debug(string, ...any) {}
+func (noopLogger) Info(string, ...any)  {}
+func (noopLogger) Warn(string, ...any)  {}
+func (noopLogger) Error(string, ...any) {}
+
+func (a *AgentActivities) getLogger(ctx context.Context) (l log.Logger) {
 	if a.logger != nil {
 		return a.logger
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			l = noopLogger{}
+		}
+	}()
 	return activity.GetLogger(ctx)
 }
 

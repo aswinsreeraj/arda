@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/aswinsreeraj/arda/services/execution"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/credentials"
 	"github.com/aswinsreeraj/arda/services/gateway/identity"
@@ -40,6 +40,7 @@ type GatewayConfig struct {
 	RegistryHandler    http.Handler
 	RegistryService    RegistryService
 	ReliabilityService proxy.ReliabilityService
+	ExecutionClient    proxy.ExecutionClient
 	TemporalClient     WorkflowDispatcher
 	CredentialHandler  *credentials.Handler
 	IdentityHandler    *identity.Handler
@@ -47,6 +48,29 @@ type GatewayConfig struct {
 
 // NewGateway creates and configures the API Gateway root http.Handler.
 func NewGateway(cfg GatewayConfig) http.Handler {
+	execClient := cfg.ExecutionClient
+	if execClient == nil && cfg.TemporalClient != nil {
+		// Adapt TemporalClient and Registry to an in-process execution.Service for backward compatibility
+		var regAdapter execution.RegistryClient
+		if cfg.RegistryClient != nil {
+			regAdapter = execution.NewGRPCRegistryAdapter(cfg.RegistryClient)
+		} else if cfg.RegistryService != nil {
+			regAdapter = execution.RegistryClientFunc(func(ctx context.Context, tenantID, agentID, versionID uuid.UUID) (*domain.AgentVersion, error) {
+				if vg, ok := cfg.RegistryService.(interface {
+					GetVersion(ctx context.Context, tenantID, agentID, versionID uuid.UUID) (*domain.AgentVersion, error)
+				}); ok {
+					return vg.GetVersion(ctx, tenantID, agentID, versionID)
+				}
+				return cfg.RegistryService.GetLatestPublishedVersion(ctx, tenantID, agentID)
+			})
+		}
+		if regAdapter != nil {
+			if svc, err := execution.NewService(cfg.TemporalClient, regAdapter); err == nil {
+				execClient = proxy.NewInProcessExecutionClient(svc)
+			}
+		}
+	}
+
 	router := gin.New()
 	router.Use(LoggingMiddleware())
 	router.Use(func(c *gin.Context) {
@@ -197,11 +221,11 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		)
 	}
 
-	// Agent Execution (Temporal)
+	// Agent Execution (routed through Execution Service)
 	api.POST("/v1/agents/:id/execute",
 		auth.RequireActionMiddleware(auth.ActionAgentExecute, WriteErrorResponse),
 		func(c *gin.Context) {
-			handleExecuteAgent(c, cfg.RegistryClient, cfg.RegistryService, cfg.TemporalClient)
+			handleExecuteAgent(c, execClient, cfg.RegistryClient, cfg.RegistryService)
 		},
 	)
 
@@ -346,11 +370,12 @@ func handleReliabilityGate(c *gin.Context, relSvc proxy.ReliabilityService) {
 }
 
 type executeRequestBody struct {
-	AgentVersionID *uuid.UUID     `json:"agent_version_id,omitempty"`
-	VersionID      *uuid.UUID     `json:"version_id,omitempty"`
-	Input          map[string]any `json:"input,omitempty"`
-	ExecutionMode  string         `json:"execution_mode,omitempty"`
-	ExecutionID    string         `json:"execution_id,omitempty"`
+	AgentVersionID *uuid.UUID           `json:"agent_version_id,omitempty"`
+	VersionID      *uuid.UUID           `json:"version_id,omitempty"`
+	Input          map[string]any       `json:"input,omitempty"`
+	ExecutionMode  domain.ExecutionMode `json:"execution_mode,omitempty"`
+	Mode           string               `json:"mode,omitempty"`
+	ExecutionID    string               `json:"execution_id,omitempty"`
 }
 
 // ExecuteAgentResponse represents the 202 Accepted response payload returned by agent execution dispatch.
@@ -362,7 +387,7 @@ type ExecuteAgentResponse struct {
 	Status         string    `json:"status"`
 }
 
-func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceClient, regSvc RegistryService, temporalClient WorkflowDispatcher) {
+func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regClient ardav1.AgentRegistryServiceClient, regSvc RegistryService) {
 	identity, ok := auth.IdentityFromContext(c.Request.Context())
 	if !ok {
 		WriteErrorResponse(c.Writer, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
@@ -384,8 +409,13 @@ func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceCli
 		}
 	}
 
-	if regClient == nil && regSvc == nil {
-		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "registry service is not configured")
+	if strings.ToLower(strings.TrimSpace(body.Mode)) == "sync" {
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "synchronous execution mode is not supported; use 'async'")
+		return
+	}
+
+	if execClient == nil {
+		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "execution service is not configured")
 		return
 	}
 
@@ -399,12 +429,18 @@ func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceCli
 	var verID uuid.UUID
 	if explicitVerID != uuid.Nil {
 		verID = explicitVerID
+	} else {
+		// Omitted version: resolve latest published version for backward compatibility
+		if regClient == nil && regSvc == nil {
+			WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "registry service is not configured")
+			return
+		}
+
 		if regClient != nil {
 			ctx := withInternalAuth(c.Request.Context(), identity)
-			resp, err := regClient.GetAgentVersion(ctx, &ardav1.GetAgentVersionRequest{
-				TenantId:  identity.TenantID.String(),
-				AgentId:   agentID.String(),
-				VersionId: explicitVerID.String(),
+			resp, err := regClient.GetLatestPublishedVersion(ctx, &ardav1.GetLatestPublishedVersionRequest{
+				TenantId: identity.TenantID.String(),
+				AgentId:  agentID.String(),
 			})
 			if err != nil {
 				status, code, msg := registrygrpc.MapGRPCErrorToHTTP(err)
@@ -412,13 +448,17 @@ func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceCli
 				return
 			}
 			if resp == nil || resp.GetVersion() == nil {
-				WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "agent version not found")
+				WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
 				return
 			}
-		} else if vg, ok := regSvc.(interface {
-			GetVersion(ctx context.Context, tenantID, agentID, versionID uuid.UUID) (*domain.AgentVersion, error)
-		}); ok {
-			ver, err := vg.GetVersion(c.Request.Context(), identity.TenantID, agentID, explicitVerID)
+			parsedID, err := uuid.Parse(resp.GetVersion().GetId())
+			if err != nil {
+				WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "invalid version id from registry")
+				return
+			}
+			verID = parsedID
+		} else {
+			ver, err := regSvc.GetLatestPublishedVersion(c.Request.Context(), identity.TenantID, agentID)
 			if err != nil {
 				var domErr *domain.DomainError
 				if errors.As(err, &domErr) {
@@ -437,88 +477,49 @@ func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceCli
 				WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
 				return
 			}
+
 			if ver == nil {
-				WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "agent version not found")
+				WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
 				return
 			}
+			verID = ver.ID
 		}
-	} else if regClient != nil {
-		ctx := withInternalAuth(c.Request.Context(), identity)
-		resp, err := regClient.GetLatestPublishedVersion(ctx, &ardav1.GetLatestPublishedVersionRequest{
-			TenantId: identity.TenantID.String(),
-			AgentId:  agentID.String(),
-		})
-		if err != nil {
-			status, code, msg := registrygrpc.MapGRPCErrorToHTTP(err)
-			WriteErrorResponse(c.Writer, status, code, msg)
-			return
-		}
-		if resp == nil || resp.GetVersion() == nil {
-			WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
-			return
-		}
-		parsedID, err := uuid.Parse(resp.GetVersion().GetId())
-		if err != nil {
-			WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "invalid version id from registry")
-			return
-		}
-		verID = parsedID
-	} else {
-		ver, err := regSvc.GetLatestPublishedVersion(c.Request.Context(), identity.TenantID, agentID)
-		if err != nil {
-			var domErr *domain.DomainError
-			if errors.As(err, &domErr) {
-				statusCode := http.StatusInternalServerError
-				switch domErr.Code {
-				case domain.CodeNotFound:
-					statusCode = http.StatusNotFound
-				case domain.CodeValidationFailed:
-					statusCode = http.StatusBadRequest
-				case domain.CodeUnauthenticated:
-					statusCode = http.StatusUnauthorized
-				}
-				WriteErrorResponse(c.Writer, statusCode, string(domErr.Code), domErr.Message)
-				return
-			}
-			WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
-			return
-		}
-
-		if ver == nil {
-			WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "no published version found for agent")
-			return
-		}
-		verID = ver.ID
 	}
 
-	if temporalClient == nil {
-		WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "temporal workflow client is not configured")
-		return
-	}
-
-	wfInput := temporal.AgentExecutionInput{
-		TenantID:       identity.TenantID,
+	execReq := execution.SubmitExecutionRequest{
 		AgentID:        agentID,
 		AgentVersionID: verID,
-		ExecutionInput: body.Input,
+		Input:          body.Input,
+		ExecutionMode:  body.ExecutionMode,
+		Mode:           body.Mode,
+		ExecutionID:    body.ExecutionID,
 	}
 
-	workflowID := fmt.Sprintf("agent-exec-%s-%s", agentID, uuid.New().String())
-	if strings.TrimSpace(body.ExecutionID) != "" {
-		workflowID = fmt.Sprintf("agent-exec-%s-%s", agentID, strings.TrimSpace(body.ExecutionID))
-	}
-	run, err := temporalClient.StartAgentExecutionWorkflow(c.Request.Context(), workflowID, wfInput)
+	authHeader := c.GetHeader("Authorization")
+	execResp, err := execClient.SubmitExecution(c.Request.Context(), authHeader, execReq)
 	if err != nil {
-		WriteErrorResponse(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", "failed to dispatch execution workflow to temporal")
+		if errors.Is(err, context.Canceled) || c.Request.Context().Err() != nil {
+			return
+		}
+		if errors.Is(err, proxy.ErrExecutionUnconfigured) {
+			WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "UPSTREAM_UNAVAILABLE", "execution service is not configured")
+			return
+		}
+		var execErr *proxy.ExecutionError
+		if errors.As(err, &execErr) {
+			WriteErrorResponse(c.Writer, execErr.StatusCode, execErr.Code, execErr.Message)
+			return
+		}
+		WriteErrorResponse(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", "failed to dispatch execution request")
 		return
 	}
 
 	resp := ExecuteAgentResponse{
-		WorkflowID:     run.GetID(),
-		RunID:          run.GetRunID(),
-		AgentID:        agentID,
-		AgentVersionID: verID,
-		Status:         "ACCEPTED",
+		WorkflowID:     execResp.WorkflowID,
+		RunID:          execResp.RunID,
+		AgentID:        execResp.AgentID,
+		AgentVersionID: execResp.AgentVersionID,
+		Status:         execResp.Status,
 	}
 
 	WriteJSON(c.Writer, http.StatusAccepted, resp)

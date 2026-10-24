@@ -10,9 +10,11 @@ import (
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
+	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -50,13 +52,18 @@ func (a *GRPCRegistryAdapter) GetAgentVersion(ctx context.Context, tenantID, age
 		return nil, errors.New("grpc registry client is nil")
 	}
 
+	md := metadata.New(map[string]string{
+		registrygrpc.MetadataTenantID: tenantID.String(),
+	})
+	outCtx := metadata.NewOutgoingContext(ctx, md)
+
 	req := &ardav1.GetAgentVersionRequest{
 		TenantId:  tenantID.String(),
 		AgentId:   agentID.String(),
 		VersionId: versionID.String(),
 	}
 
-	resp, err := a.client.GetAgentVersion(ctx, req)
+	resp, err := a.client.GetAgentVersion(outCtx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -229,5 +236,6 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		AgentVersionID: req.AgentVersionID,
 		Status:         "ACCEPTED",
 		ExecutionMode:  execMode,
+		Mode:           "async",
 	}, nil
 }

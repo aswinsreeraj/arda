@@ -89,6 +89,7 @@ func main() {
 		RateLimitBurst:         burst,
 		RateLimitEnabled:       true,
 		ReliabilityServiceAddr: os.Getenv("RELIABILITY_SERVICE_ADDR"),
+		ExecutionServiceAddr:   os.Getenv("EXECUTION_SERVICE_ADDR"),
 		TemporalAddr:           os.Getenv("TEMPORAL_ADDRESS"),
 		TemporalNamespace:      os.Getenv("TEMPORAL_NAMESPACE"),
 		TemporalTaskQueue:      os.Getenv("TEMPORAL_TASK_QUEUE"),

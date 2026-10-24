@@ -15,6 +15,7 @@ type SubmitExecutionRequest struct {
 	VersionID      uuid.UUID            `json:"version_id,omitempty"` // Alias for AgentVersionID
 	Input          map[string]any       `json:"input,omitempty"`
 	ExecutionMode  domain.ExecutionMode `json:"execution_mode,omitempty"`
+	Mode           string               `json:"mode,omitempty"`         // "async" or "sync" (defaults to "async")
 	ExecutionID    string               `json:"execution_id,omitempty"` // Optional idempotency or tracking key
 }
 
@@ -29,6 +30,19 @@ func (r *SubmitExecutionRequest) Validate() error {
 	}
 	if r.AgentVersionID == uuid.Nil {
 		return NewValidationError("agent_version_id is required and must be a valid UUID")
+	}
+
+	if r.Mode != "" {
+		normalizedMode := strings.ToLower(strings.TrimSpace(r.Mode))
+		if normalizedMode == "sync" {
+			return NewValidationError("synchronous execution mode is not supported; use 'async'")
+		}
+		if normalizedMode != "async" {
+			return NewValidationError(fmt.Sprintf("unsupported mode: %q; supported modes are: async", r.Mode))
+		}
+		r.Mode = normalizedMode
+	} else {
+		r.Mode = "async"
 	}
 
 	if r.ExecutionMode != "" {
@@ -50,6 +64,7 @@ type SubmitExecutionResponse struct {
 	AgentVersionID uuid.UUID            `json:"agent_version_id"`
 	Status         string               `json:"status"` // "ACCEPTED"
 	ExecutionMode  domain.ExecutionMode `json:"execution_mode,omitempty"`
+	Mode           string               `json:"mode,omitempty"` // "async"
 }
 
 // ErrorCode defines standardized error codes for the execution service.
