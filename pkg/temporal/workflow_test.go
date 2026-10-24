@@ -724,3 +724,89 @@ func TestTemporal_StructuredOutput_InvalidOutputNonRetryable(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentExecutionWorkflow_EscalationOutcome(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	wfEnv := suite.NewTestWorkflowEnvironment()
+
+	mock := &agentruntime.MockExecutor{
+		Result: agentruntime.ExecutionResult{
+			Status:  agentruntime.StatusEscalated,
+			Outcome: agentruntime.OutcomeTypeEscalation,
+			Escalation: &agentruntime.EscalationInfo{
+				Reason: "requires supervisory human review",
+				Target: "compliance_officer",
+			},
+		},
+	}
+	rt, _ := agentruntime.New(mock)
+	agentActivities := temporal.NewAgentActivities(rt)
+
+	wfEnv.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+	wfEnv.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	input := temporal.AgentExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+	}
+
+	wfEnv.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+	if !wfEnv.IsWorkflowCompleted() {
+		t.Fatalf("expected workflow to complete")
+	}
+	if err := wfEnv.GetWorkflowError(); err != nil {
+		t.Fatalf("unexpected workflow error: %v", err)
+	}
+
+	var res temporal.AgentExecutionResult
+	if err := wfEnv.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("failed to decode result: %v", err)
+	}
+
+	if res.Status != "ESCALATED" {
+		t.Errorf("expected status ESCALATED, got %s", res.Status)
+	}
+	if res.Escalation == nil || res.Escalation.Target != "compliance_officer" {
+		t.Errorf("unexpected escalation: %+v", res.Escalation)
+	}
+}
+
+func TestAgentExecutionActivity_ToolDenialNonRetryable(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	actEnv := suite.NewTestActivityEnvironment()
+
+	mock := &agentruntime.MockExecutor{
+		Err: agentruntime.NewPermanentError("tool execution denied by gateway", agentruntime.ErrToolDenied),
+	}
+	rt, _ := agentruntime.New(mock)
+	agentActivities := temporal.NewAgentActivities(rt)
+	actEnv.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+	input := temporal.AgentExecutionActivityInput{
+		TenantID:       uuid.New(),
+		AgentID:        uuid.New(),
+		AgentVersionID: uuid.New(),
+	}
+
+	_, err := actEnv.ExecuteActivity(agentActivities.AgentExecutionActivity, input)
+	if err == nil {
+		t.Fatalf("expected error from activity, got nil")
+	}
+
+	var appErr *sdktemporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
+	}
+	if appErr.Type() != "PermanentExecutionError" {
+		t.Errorf("expected PermanentExecutionError, got: %s", appErr.Type())
+	}
+	if !appErr.NonRetryable() {
+		t.Errorf("expected PermanentExecutionError to be non-retryable to prevent retry bypass of tool authorization")
+	}
+}

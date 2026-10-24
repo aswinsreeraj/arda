@@ -75,6 +75,30 @@ var (
 
 	// ErrInternalValidation indicates an internal failure during schema compilation or validation.
 	ErrInternalValidation = errors.New("agentruntime: internal validation failure")
+
+	// ErrBudgetExceeded indicates that an execution budget (iterations, tokens, size) was exhausted.
+	ErrBudgetExceeded = errors.New("agentruntime: execution budget exceeded")
+
+	// ErrRepeatedToolCall indicates that an unprogressed repeated identical tool invocation was detected.
+	ErrRepeatedToolCall = errors.New("agentruntime: repeated identical tool call detected")
+
+	// ErrToolDenied indicates that a requested tool was denied by policy or authorization.
+	ErrToolDenied = errors.New("agentruntime: tool execution denied")
+
+	// ErrToolExecutionFailed indicates a failure during tool execution.
+	ErrToolExecutionFailed = errors.New("agentruntime: tool execution failed")
+
+	// ErrReliabilityRejected indicates that the Reliability Service gate rejected the action or decision.
+	ErrReliabilityRejected = errors.New("agentruntime: reliability gate rejected proposed action")
+
+	// ErrReliabilityServiceUnavailable indicates that the Reliability Service could not be reached.
+	ErrReliabilityServiceUnavailable = errors.New("agentruntime: reliability service unavailable")
+
+	// ErrNilReliabilityService indicates that a required ReliabilityService dependency was not provided.
+	ErrNilReliabilityService = errors.New("agentruntime: reliability service cannot be nil")
+
+	// ErrNilToolGateway indicates that a required ToolGateway dependency was not provided.
+	ErrNilToolGateway = errors.New("agentruntime: tool gateway cannot be nil")
 )
 
 // ErrorCategory defines the classification of a runtime failure for retry and propagation decisions.
@@ -181,7 +205,14 @@ func ClassifyError(err error) ErrorCategory {
 		errors.Is(err, ErrInvalidOutputJSON) ||
 		errors.Is(err, ErrSchemaViolation) ||
 		errors.Is(err, ErrOutputTooLarge) ||
-		errors.Is(err, ErrInternalValidation) {
+		errors.Is(err, ErrInternalValidation) ||
+		errors.Is(err, ErrBudgetExceeded) ||
+		errors.Is(err, ErrRepeatedToolCall) ||
+		errors.Is(err, ErrToolDenied) ||
+		errors.Is(err, ErrReliabilityRejected) ||
+		errors.Is(err, ErrReliabilityServiceUnavailable) ||
+		errors.Is(err, ErrNilReliabilityService) ||
+		errors.Is(err, ErrNilToolGateway) {
 		return CategoryPermanent
 	}
 	if errors.Is(err, ErrTransient) {
@@ -195,6 +226,38 @@ func ClassifyError(err error) ErrorCategory {
 
 	// By default, generic execution failures are treated as transient to allow bounded retries
 	return CategoryTransient
+}
+
+// OutcomeType represents the explicit discriminated outcome of an agent execution.
+type OutcomeType string
+
+const (
+	// OutcomeTypeDecision denotes a successfully validated structured decision.
+	OutcomeTypeDecision OutcomeType = "DECISION"
+
+	// OutcomeTypeEscalation denotes that human or Reliability Service review is required.
+	OutcomeTypeEscalation OutcomeType = "ESCALATION"
+
+	// OutcomeTypeFailure denotes an execution error or failure.
+	OutcomeTypeFailure OutcomeType = "FAILURE"
+)
+
+// SupportedOutcomeTypes is the set of recognized outcome constants.
+var SupportedOutcomeTypes = map[OutcomeType]struct{}{
+	OutcomeTypeDecision:   {},
+	OutcomeTypeEscalation: {},
+	OutcomeTypeFailure:    {},
+}
+
+// ExecutionMetadata captures execution telemetry, budgets, and reliability details.
+type ExecutionMetadata struct {
+	Iterations          int    `json:"iterations"`
+	ToolInvocations     int    `json:"tool_invocations"`
+	PromptTokens        int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int    `json:"completion_tokens,omitempty"`
+	TotalTokens         int    `json:"total_tokens,omitempty"`
+	ReliabilityDecision string `json:"reliability_decision,omitempty"`
+	ToolDenialCategory  string `json:"tool_denial_category,omitempty"`
 }
 
 // ExecutionStatus defines the outcome status of an agent execution.
@@ -248,11 +311,28 @@ func (in ExecutionInput) Validate() error {
 
 // ExecutionResult represents the structured outcome of an agent execution.
 type ExecutionResult struct {
-	Status           ExecutionStatus `json:"status"`
-	Output           map[string]any  `json:"output,omitempty"`
-	StructuredOutput any             `json:"structured_output,omitempty"`
-	Reason           string          `json:"reason,omitempty"`
-	Escalation       *EscalationInfo `json:"escalation,omitempty"`
+	Status           ExecutionStatus    `json:"status"`
+	Outcome          OutcomeType        `json:"outcome,omitempty"`
+	Output           map[string]any     `json:"output,omitempty"`
+	StructuredOutput any                `json:"structured_output,omitempty"`
+	Reason           string             `json:"reason,omitempty"`
+	Escalation       *EscalationInfo    `json:"escalation,omitempty"`
+	Metadata         *ExecutionMetadata `json:"metadata,omitempty"`
+}
+
+// IsDecision returns true if the execution completed as a validated decision.
+func (r ExecutionResult) IsDecision() bool {
+	return r.Status == StatusSuccess && (r.Outcome == "" || r.Outcome == OutcomeTypeDecision)
+}
+
+// IsEscalation returns true if the execution outcome is an escalation.
+func (r ExecutionResult) IsEscalation() bool {
+	return r.Status == StatusEscalated && (r.Outcome == "" || r.Outcome == OutcomeTypeEscalation)
+}
+
+// IsFailure returns true if the execution resulted in a failure.
+func (r ExecutionResult) IsFailure() bool {
+	return r.Status == StatusFailed && (r.Outcome == "" || r.Outcome == OutcomeTypeFailure)
 }
 
 // Validate enforces valid status values and structural constraints on execution results.
@@ -264,8 +344,22 @@ func (r ExecutionResult) Validate() error {
 		return fmt.Errorf("%w: unsupported status %q", ErrInvalidResult, r.Status)
 	}
 
+	outcome := r.Outcome
+	if outcome != "" {
+		if _, ok := SupportedOutcomeTypes[outcome]; !ok {
+			return fmt.Errorf("%w: unsupported outcome %q", ErrInvalidResult, outcome)
+		}
+	}
+
 	switch r.Status {
+	case StatusSuccess:
+		if outcome != "" && outcome != OutcomeTypeDecision {
+			return fmt.Errorf("%w: success status cannot have outcome %q", ErrInvalidResult, outcome)
+		}
 	case StatusEscalated:
+		if outcome != "" && outcome != OutcomeTypeEscalation {
+			return fmt.Errorf("%w: escalated status cannot have outcome %q", ErrInvalidResult, outcome)
+		}
 		if r.Escalation == nil {
 			return fmt.Errorf("%w: escalation status requires escalation details", ErrInvalidResult)
 		}
@@ -273,6 +367,9 @@ func (r ExecutionResult) Validate() error {
 			return fmt.Errorf("%w: escalation status requires non-empty reason or target", ErrInvalidResult)
 		}
 	case StatusFailed:
+		if outcome != "" && outcome != OutcomeTypeFailure {
+			return fmt.Errorf("%w: failed status cannot have outcome %q", ErrInvalidResult, outcome)
+		}
 		if strings.TrimSpace(r.Reason) == "" {
 			return fmt.Errorf("%w: failed status requires a non-empty explanation reason", ErrInvalidResult)
 		}
@@ -325,6 +422,17 @@ func (r *Runtime) Run(ctx context.Context, input ExecutionInput) (ExecutionResul
 	res, err := r.executor.Execute(ctx, input)
 	if err != nil {
 		return ExecutionResult{}, err
+	}
+
+	if res.Outcome == "" {
+		switch res.Status {
+		case StatusSuccess:
+			res.Outcome = OutcomeTypeDecision
+		case StatusEscalated:
+			res.Outcome = OutcomeTypeEscalation
+		case StatusFailed:
+			res.Outcome = OutcomeTypeFailure
+		}
 	}
 
 	if err := res.Validate(); err != nil {
