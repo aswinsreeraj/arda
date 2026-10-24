@@ -128,23 +128,32 @@ go run cmd/registry/main.go
 Agents can optionally declare an `output_schema` to enforce schema-validated structured responses from LLM executions. When configured, ARDA's agent runtime verifies the model's completion against the contract and surfaces a parsed JSON object directly in the execution result.
 
 ### Supported JSON Schema Version & Features
-ARDA implements a zero-dependency, safe validator adhering to **JSON Schema Draft-07** (`http://json-schema.org/draft-07/schema#`). Supported keywords include:
+ARDA implements a zero-dependency, safe validator adhering strictly to **JSON Schema Draft-07** (`http://json-schema.org/draft-07/schema#`). Supported keywords include:
 - **Core Types:** `object`, `array`, `string`, `number`, `integer`, `boolean`, `null` (supports union types like `["string", "null"]`).
-- **Object Constraints:** `properties`, `required`, `additionalProperties` (boolean or sub-schema), `minProperties`, `maxProperties`, `patternProperties`.
-- **Array Constraints:** `items` (single schema or tuple schema array), `additionalItems`, `minItems`, `maxItems`, `uniqueItems`.
-- **String Constraints:** `minLength`, `maxLength`, `pattern` (bounded regex), `format`.
-- **Numeric Constraints:** `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`.
+- **Object Constraints:** `properties`, `required` (enforces uniqueness of declared required keys), `additionalProperties` (boolean or sub-schema), `minProperties`, `maxProperties`, `patternProperties`, `propertyNames`, `dependencies` (both property list dependencies and schema dependencies).
+- **Array Constraints:** `items` (single schema or tuple schema array), `additionalItems`, `contains`, `minItems`, `maxItems`, `uniqueItems` (deep equality across nested objects and arrays).
+- **String Constraints:** `minLength`, `maxLength`, `pattern` (bounded regex), `format` (`date-time`, `date`, `time`, `email`, `ipv4`, `ipv6`, `uri`, `uri-reference`, `uuid`, `regex`, `json-pointer`).
+- **Numeric Constraints:** `minimum`, `maximum`, `exclusiveMinimum` (numeric, Draft-07), `exclusiveMaximum` (numeric, Draft-07), `multipleOf` (with adaptive epsilon precision for decimals).
 - **Value Matching:** `enum`, `const`.
 - **Combinators:** `allOf`, `anyOf`, `oneOf`, `not`.
-- **Local Definitions:** Local references to `#/definitions/...` and `#/$defs/...`.
+- **Local Definitions & References:** Local references to `#/definitions/...`, `#/$defs/...`, and `#` root pointers.
 
 ### Security Bounds & DoS Guardrails
-- **No Remote Network Fetching:** Remote `$ref` URIs (e.g., `http://`, `https://`, `ftp://`, or external files) are strictly forbidden and rejected at configuration time (`ErrRemoteRefForbidden`).
+- **No Remote Network Fetching:** Remote `$ref` URIs (e.g., `http://`, `https://`, `ftp://`, or external files) are strictly forbidden and rejected at compilation time (`ErrRemoteRefForbidden`).
+- **Compile-time Circular Reference Detection:** Unguardable `$ref` alias loops (e.g. `A -> A` or `A -> B -> A`) are detected and rejected at compile time (`ErrCircularReference`).
 - **Schema Size Limit:** Schema definition must not exceed **64 KB** (`ErrSchemaTooLarge`).
-- **Schema Depth Limit:** Nesting depth is capped at **10 levels** (`ErrSchemaTooDeep`).
+- **Schema Nesting Depth:** Nesting depth is capped at **10 levels** (`ErrSchemaTooDeep`).
 - **Regex Length Limit:** Pattern expressions are limited to **250 characters** (`ErrInvalidRegex`).
-- **Response Size Limit:** Model completions exceeding **1 MB** before JSON parsing are immediately rejected (`ErrOutputTooLarge`).
+- **Instance Nesting Depth:** Evaluated instances exceeding **32 levels** of nesting fail closed immediately (`resource_limit`).
+- **Validation Step Cap:** Instance evaluation is capped at **100,000 steps** to prevent algorithmic complexity attacks (`resource_limit`).
+- **Collection Bounds:** Array instances are bounded at **100,000 items** and objects at **10,000 properties**.
+- **Model Output Size Limit:** Model completions exceeding **1 MB** before JSON parsing are immediately rejected (`ErrOutputTooLarge`).
 - **Strict Parsing:** Markdown code fences (e.g. ` ```json `) and trailing syntax are NOT silently stripped. Model outputs must be pure JSON.
+
+### Intentionally Unsupported Behavior
+- **Draft-04 Boolean-style `exclusiveMinimum`/`exclusiveMaximum`:** In Draft-07, these must be numeric bounds. Passing boolean flags produces a compilation error.
+- **Remote `$ref` Resolution:** Dynamic network fetching of external schemas is intentionally disabled to eliminate SSRF and external denial-of-service attack vectors.
+- **Lenient Type Coercion:** Missing object keys are never treated as `null`. Integers are validated strictly as integers (`math.Floor(f) == f`), not loosely converted from strings.
 
 ### Configuration Example
 ```json
