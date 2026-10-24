@@ -39,6 +39,27 @@ var (
 
 	// ErrInvalidConfiguration indicates that the resolved configuration failed validation.
 	ErrInvalidConfiguration = errors.New("agentruntime: invalid agent configuration")
+
+	// ErrUnsupportedProvider indicates that the requested provider is not registered or supported.
+	ErrUnsupportedProvider = errors.New("agentruntime: unsupported provider")
+
+	// ErrUnsupportedModel indicates that the requested model is not supported by the selected provider.
+	ErrUnsupportedModel = errors.New("agentruntime: unsupported model")
+
+	// ErrMissingProvider indicates that no provider identifier was specified in config or defaults.
+	ErrMissingProvider = errors.New("agentruntime: missing provider identifier")
+
+	// ErrInvalidTenant indicates that the tenant ID is missing or invalid for scoped credential resolution.
+	ErrInvalidTenant = errors.New("agentruntime: invalid tenant identifier")
+
+	// ErrCredentialNotFound indicates that no credential exists in Vault for the tenant and provider.
+	ErrCredentialNotFound = errors.New("agentruntime: credential not found")
+
+	// ErrEmptyCredential indicates that the resolved credential string was empty.
+	ErrEmptyCredential = errors.New("agentruntime: empty credential value")
+
+	// ErrMissingCredential indicates that a required credential was not provided or resolver is unconfigured.
+	ErrMissingCredential = errors.New("agentruntime: missing provider credential")
 )
 
 // ErrorCategory defines the classification of a runtime failure for retry and propagation decisions.
@@ -123,7 +144,9 @@ func ClassifyError(err error) ErrorCategory {
 		errors.Is(err, ErrMalformedPlaceholder) ||
 		errors.Is(err, ErrMissingPlaceholderValue) ||
 		errors.Is(err, ErrUnsupportedValueType) ||
-		errors.Is(err, ErrInvalidLLMRequest) {
+		errors.Is(err, ErrInvalidLLMRequest) ||
+		errors.Is(err, ErrInvalidTenant) ||
+		errors.Is(err, ErrMissingProvider) {
 		return CategoryInvalidInput
 	}
 	if errors.Is(err, ErrInvalidResult) {
@@ -133,7 +156,12 @@ func ClassifyError(err error) ErrorCategory {
 		errors.Is(err, ErrConfigurationNotFound) ||
 		errors.Is(err, ErrInvalidConfiguration) ||
 		errors.Is(err, ErrNilConfigProvider) ||
-		errors.Is(err, ErrNilLLMClient) {
+		errors.Is(err, ErrNilLLMClient) ||
+		errors.Is(err, ErrUnsupportedProvider) ||
+		errors.Is(err, ErrUnsupportedModel) ||
+		errors.Is(err, ErrCredentialNotFound) ||
+		errors.Is(err, ErrEmptyCredential) ||
+		errors.Is(err, ErrMissingCredential) {
 		return CategoryPermanent
 	}
 	if errors.Is(err, ErrTransient) {

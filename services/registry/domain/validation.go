@@ -44,6 +44,13 @@ func ValidateConfiguration(cfg Configuration) error {
 		}
 	}
 
+	// Validate LLMConfig if specified
+	if cfg.LLMConfig != nil {
+		if err := validateLLMConfig(*cfg.LLMConfig); err != nil {
+			details = append(details, err.Error())
+		}
+	}
+
 	// Security check: ensure no plaintext LLM or MCP credentials are stored
 	if err := checkForPlaintextCredentials(cfg); err != nil {
 		details = append(details, err.Error())
@@ -51,6 +58,32 @@ func ValidateConfiguration(cfg Configuration) error {
 
 	if len(details) > 0 {
 		return NewValidationError("configuration validation failed", details...)
+	}
+
+	return nil
+}
+
+// validateLLMConfig validates provider identifier safety and prevents arbitrary URL injection.
+func validateLLMConfig(lc LLMConfig) error {
+	trimmedProvider := strings.TrimSpace(lc.Provider)
+	if trimmedProvider != "" {
+		if len(trimmedProvider) > 100 {
+			return fmt.Errorf("llm_config.provider exceeds maximum length of 100 characters")
+		}
+		if strings.Contains(trimmedProvider, "://") || strings.ContainsAny(trimmedProvider, "/\\#?&% ") {
+			return fmt.Errorf("llm_config.provider contains invalid characters; must be a valid identifier (arbitrary URLs are forbidden)")
+		}
+	}
+
+	if lc.Parameters != nil {
+		for k, v := range lc.Parameters {
+			lowerK := strings.ToLower(k)
+			if lowerK == "url" || lowerK == "base_url" || lowerK == "endpoint" {
+				if strVal, ok := v.(string); ok && strings.TrimSpace(strVal) != "" {
+					return fmt.Errorf("arbitrary provider endpoint URL in llm_config.parameters['%s'] is not permitted", k)
+				}
+			}
+		}
 	}
 
 	return nil
@@ -93,6 +126,21 @@ func checkForPlaintextCredentials(cfg Configuration) error {
 	}
 	if err := checkMap(cfg.Budgets, "budgets"); err != nil {
 		return err
+	}
+	if cfg.LLMConfig != nil {
+		if cfg.LLMConfig.Parameters != nil {
+			if err := checkMap(cfg.LLMConfig.Parameters, "llm_config.parameters"); err != nil {
+				return err
+			}
+		}
+		if ref := strings.TrimSpace(cfg.LLMConfig.CredentialRef); ref != "" {
+			if strings.HasPrefix(ref, "sk-") || strings.HasPrefix(ref, "ghp_") {
+				return fmt.Errorf("plaintext API key token detected in llm_config.credential_ref; credentials must not be stored in PostgreSQL")
+			}
+			if !strings.HasPrefix(ref, "env:") && !strings.HasPrefix(ref, "secret:") && !strings.HasPrefix(ref, "ref:") {
+				return fmt.Errorf("plaintext credential detected in llm_config.credential_ref; credentials must not be stored in PostgreSQL (use secret reference instead)")
+			}
+		}
 	}
 
 	return nil

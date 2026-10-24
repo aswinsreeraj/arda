@@ -10,6 +10,7 @@ import (
 
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 )
 
@@ -75,19 +76,66 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize registry configuration provider: %v", err)
 	}
 
-	// 3. Resolve LLMClient dependency (fail fast in production if unconfigured)
-	var llmClient agentruntime.LLMClient
-	allowMockLLM := *devMockLLMFlag || strings.EqualFold(os.Getenv("ARDA_DEV_MOCK_LLM"), "true")
-
-	if allowMockLLM {
-		log.Println("WARNING: ARDA_DEV_MOCK_LLM enabled. Using deterministic MockLLMClient for local/test execution.")
-		llmClient = agentruntime.NewMockLLMClient()
-	} else {
-		log.Fatal("FATAL: Production LLM client is not configured and real provider integration is not yet implemented. Set ARDA_DEV_MOCK_LLM=true for local testing or inject a production LLMClient. Refusing to silently wire MockLLMClient in production.")
+	// 3. Initialize Provider Registry and register available adapters
+	providerRegistry := agentruntime.NewProviderRegistry()
+	openAIAdapter := agentruntime.NewOpenAIAdapter()
+	if err := providerRegistry.Register(openAIAdapter); err != nil {
+		log.Fatalf("FATAL: Failed to register OpenAI provider adapter: %v", err)
 	}
 
-	// 4. Construct LLMExecutor and wrap with AgentRuntime
-	executor, err := agentruntime.NewLLMExecutor(llmClient, configProvider)
+	allowMockLLM := *devMockLLMFlag || strings.EqualFold(os.Getenv("ARDA_DEV_MOCK_LLM"), "true")
+	if allowMockLLM {
+		log.Println("WARNING: ARDA_DEV_MOCK_LLM enabled. Registering MockLLMClient for local/test execution.")
+		mockClient := agentruntime.NewMockLLMClient()
+		if err := providerRegistry.Register(mockClient); err != nil {
+			log.Fatalf("FATAL: Failed to register mock provider adapter: %v", err)
+		}
+	}
+
+	// 4. Initialize Vault client and Tenant Credential Resolver for BYOK
+	vaultCfg := vault.ConfigFromEnv()
+	var credResolver agentruntime.CredentialResolver
+
+	if vaultCfg.Address != "" && vaultCfg.Token != "" {
+		vaultClient, err := vault.NewClient(vaultCfg)
+		if err != nil {
+			log.Fatalf("FATAL: Failed to initialize Vault client: %v", err)
+		}
+		vaultResolver, err := agentruntime.NewVaultCredentialResolver(vaultClient)
+		if err != nil {
+			log.Fatalf("FATAL: Failed to initialize Vault credential resolver: %v", err)
+		}
+		credResolver = vaultResolver
+		log.Printf("  Vault Address:    %s (mount: %s)", vaultCfg.Address, vaultCfg.MountPath)
+	} else if allowMockLLM {
+		log.Println("WARNING: Vault not configured; using MockCredentialResolver in local dev mode.")
+		credResolver = agentruntime.NewMockCredentialResolver()
+	} else {
+		log.Fatal("FATAL: Vault configuration (VAULT_ADDR and VAULT_TOKEN) is required for production BYOK credential resolution. Refusing to run in production without secret storage. Set ARDA_DEV_MOCK_LLM=true for local mock testing.")
+	}
+
+	// 5. Initialize ResolvingLLMClient with dynamic provider routing and BYOK credentials
+	defaultProvider := "openai"
+	if allowMockLLM && (vaultCfg.Address == "" || vaultCfg.Token == "") {
+		defaultProvider = "mock"
+	}
+	resolvingClient, err := agentruntime.NewResolvingLLMClient(
+		providerRegistry,
+		credResolver,
+		agentruntime.WithDefaultProvider(defaultProvider),
+		agentruntime.WithResolvingDefaultModel("gpt-4o"),
+	)
+	if err != nil {
+		log.Fatalf("FATAL: Failed to initialize dynamic resolving LLM client: %v", err)
+	}
+
+	// 6. Construct LLMExecutor and wrap with AgentRuntime
+	executor, err := agentruntime.NewLLMExecutor(
+		resolvingClient,
+		configProvider,
+		agentruntime.WithDefaultModel("gpt-4o"),
+		agentruntime.WithDefaultExecutorProvider(defaultProvider),
+	)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize LLM executor: %v", err)
 	}

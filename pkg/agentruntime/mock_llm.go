@@ -69,3 +69,18 @@ func NewMockLLMClient() *MockLLMClient {
 		},
 	}
 }
+
+// ProviderID returns "mock" to fulfill the ProviderAdapter interface.
+func (m *MockLLMClient) ProviderID() string {
+	return "mock"
+}
+
+// SupportedModels returns supported mock models to fulfill the ProviderAdapter interface.
+func (m *MockLLMClient) SupportedModels() []string {
+	return []string{"mock-model-v1", "mock-model-v2"}
+}
+
+// IsModelSupported accepts any model name for mock execution.
+func (m *MockLLMClient) IsModelSupported(model string) bool {
+	return true
+}

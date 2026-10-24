@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 )
 
@@ -16,6 +18,13 @@ type LLMExecutorOption func(*LLMExecutor)
 func WithDefaultModel(model string) LLMExecutorOption {
 	return func(e *LLMExecutor) {
 		e.defaultModel = model
+	}
+}
+
+// WithDefaultExecutorProvider specifies a fallback provider identifier when the agent configuration does not set one.
+func WithDefaultExecutorProvider(provider string) LLMExecutorOption {
+	return func(e *LLMExecutor) {
+		e.defaultProvider = strings.ToLower(strings.TrimSpace(provider))
 	}
 }
 
@@ -32,10 +41,11 @@ func WithPromptBuilder(b *PromptBuilder) LLMExecutorOption {
 // rendering the prompt template against the execution payload, invoking the provider-independent
 // LLMClient, and packaging the generated completion into a validated ExecutionResult.
 type LLMExecutor struct {
-	llmClient      LLMClient
-	configProvider AgentConfigProvider
-	promptBuilder  *PromptBuilder
-	defaultModel   string
+	llmClient       LLMClient
+	configProvider  AgentConfigProvider
+	promptBuilder   *PromptBuilder
+	defaultModel    string
+	defaultProvider string
 }
 
 // NewLLMExecutor creates an LLMExecutor with mandatory LLMClient and AgentConfigProvider dependencies.
@@ -107,13 +117,16 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 	}
 
 	// Construct and validate LLM request
-	req := e.buildRequest(cfg, prompt)
+	req := e.buildRequest(input, cfg, prompt)
 	if err := req.Validate(); err != nil {
 		return ExecutionResult{}, err
 	}
 
+	// Propagate tenant identity into context for downstream Vault/auth resolution
+	reqCtx := vault.WithTenantID(ctx, input.TenantID)
+
 	// Invoke the provider-independent LLMClient
-	resp, err := e.llmClient.Generate(ctx, req)
+	resp, err := e.llmClient.Generate(reqCtx, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return ExecutionResult{}, err
@@ -152,18 +165,53 @@ func (e *LLMExecutor) Run(ctx context.Context, input ExecutionInput) (ExecutionR
 	return e.Execute(ctx, input)
 }
 
-func (e *LLMExecutor) buildRequest(cfg domain.Configuration, prompt string) LLMRequest {
+func (e *LLMExecutor) buildRequest(input ExecutionInput, cfg domain.Configuration, prompt string) LLMRequest {
 	model := e.extractModel(cfg)
+	provider := e.extractProvider(cfg)
+	credRef := e.extractCredentialRef(cfg)
 	params := e.extractParams(cfg)
 
 	return LLMRequest{
-		Prompt:     prompt,
-		Model:      model,
-		Parameters: params,
+		Prompt:        prompt,
+		Model:         model,
+		Provider:      provider,
+		TenantID:      input.TenantID,
+		CredentialRef: credRef,
+		Parameters:    params,
 	}
 }
 
+func (e *LLMExecutor) extractProvider(cfg domain.Configuration) string {
+	if cfg.LLMConfig != nil && strings.TrimSpace(cfg.LLMConfig.Provider) != "" {
+		return strings.ToLower(strings.TrimSpace(cfg.LLMConfig.Provider))
+	}
+	if cfg.Guardrails != nil {
+		if p, ok := cfg.Guardrails["provider"].(string); ok && strings.TrimSpace(p) != "" {
+			return strings.ToLower(strings.TrimSpace(p))
+		}
+	}
+	return e.defaultProvider
+}
+
+func (e *LLMExecutor) extractCredentialRef(cfg domain.Configuration) string {
+	if cfg.LLMConfig != nil && strings.TrimSpace(cfg.LLMConfig.CredentialRef) != "" {
+		return strings.TrimSpace(cfg.LLMConfig.CredentialRef)
+	}
+	if cfg.Guardrails != nil {
+		if r, ok := cfg.Guardrails["credential_ref"].(string); ok && strings.TrimSpace(r) != "" {
+			return strings.TrimSpace(r)
+		}
+		if r, ok := cfg.Guardrails["secret_ref"].(string); ok && strings.TrimSpace(r) != "" {
+			return strings.TrimSpace(r)
+		}
+	}
+	return ""
+}
+
 func (e *LLMExecutor) extractModel(cfg domain.Configuration) string {
+	if cfg.LLMConfig != nil && strings.TrimSpace(cfg.LLMConfig.Model) != "" {
+		return strings.TrimSpace(cfg.LLMConfig.Model)
+	}
 	if cfg.Guardrails != nil {
 		if m, ok := cfg.Guardrails["model"].(string); ok && m != "" {
 			return m
@@ -188,18 +236,41 @@ func (e *LLMExecutor) extractParams(cfg domain.Configuration) *GenerationParams 
 		stopList  []string
 	)
 
-	if cfg.Guardrails != nil {
-		if t, ok := extractFloat(cfg.Guardrails["temperature"]); ok {
+	if cfg.LLMConfig != nil && cfg.LLMConfig.Parameters != nil {
+		if t, ok := extractFloat(cfg.LLMConfig.Parameters["temperature"]); ok {
 			tempVal = &t
 		}
-		if mt, ok := extractInt(cfg.Guardrails["max_tokens"]); ok {
+		if mt, ok := extractInt(cfg.LLMConfig.Parameters["max_tokens"]); ok {
 			maxTokVal = &mt
 		}
-		if tp, ok := extractFloat(cfg.Guardrails["top_p"]); ok {
+		if tp, ok := extractFloat(cfg.LLMConfig.Parameters["top_p"]); ok {
 			topPVal = &tp
 		}
-		if st, ok := extractStringSlice(cfg.Guardrails["stop"]); ok {
+		if st, ok := extractStringSlice(cfg.LLMConfig.Parameters["stop"]); ok {
 			stopList = st
+		}
+	}
+
+	if cfg.Guardrails != nil {
+		if tempVal == nil {
+			if t, ok := extractFloat(cfg.Guardrails["temperature"]); ok {
+				tempVal = &t
+			}
+		}
+		if maxTokVal == nil {
+			if mt, ok := extractInt(cfg.Guardrails["max_tokens"]); ok {
+				maxTokVal = &mt
+			}
+		}
+		if topPVal == nil {
+			if tp, ok := extractFloat(cfg.Guardrails["top_p"]); ok {
+				topPVal = &tp
+			}
+		}
+		if len(stopList) == 0 {
+			if st, ok := extractStringSlice(cfg.Guardrails["stop"]); ok {
+				stopList = st
+			}
 		}
 	}
 

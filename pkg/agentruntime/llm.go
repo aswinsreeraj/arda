@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // ErrInvalidLLMRequest indicates that an LLMRequest failed validation (e.g. empty prompt).
@@ -37,6 +39,15 @@ type LLMRequest struct {
 
 	// Parameters contains optional generation parameters.
 	Parameters *GenerationParams `json:"parameters,omitempty"`
+
+	// Provider is an optional provider identifier (e.g. "openai", "anthropic", "gemini", "mock").
+	Provider string `json:"provider,omitempty"`
+
+	// TenantID identifies the tenant executing this request for scoped credential resolution.
+	TenantID uuid.UUID `json:"tenant_id,omitempty"`
+
+	// CredentialRef is an optional secret reference override for the provider credential.
+	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
 // Validate verifies that the request has non-empty prompt content.

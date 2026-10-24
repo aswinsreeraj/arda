@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
+	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 	"github.com/google/uuid"
 )
@@ -553,5 +554,182 @@ func TestLLMExecutor_AgentRuntimeIntegration(t *testing.T) {
 	}
 	if resWrapped.Status != agentruntime.StatusSuccess {
 		t.Errorf("expected status %s, got %s", agentruntime.StatusSuccess, resWrapped.Status)
+	}
+}
+
+func TestLLMExecutor_WithResolvingClientAndVaultBYOK(t *testing.T) {
+	memStore := vault.NewMemoryStore()
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	// Store BYOK secret in Vault
+	_ = memStore.WriteSecret(context.Background(), tenantID, "custom/byok", map[string]string{
+		"api_key": "vault-resolved-key-999",
+	})
+
+	vaultResolver, err := agentruntime.NewVaultCredentialResolver(memStore)
+	if err != nil {
+		t.Fatalf("unexpected resolver error: %v", err)
+	}
+
+	mockLLM := agentruntime.NewMockLLMClient()
+	providerRegistry := agentruntime.NewProviderRegistry()
+	_ = providerRegistry.Register(mockLLM)
+
+	resolvingClient, err := agentruntime.NewResolvingLLMClient(providerRegistry, vaultResolver)
+	if err != nil {
+		t.Fatalf("unexpected client error: %v", err)
+	}
+
+	configProvider := agentruntime.NewMockConfigProvider()
+	cfg := validConfiguration("Hello {{input.user}}!")
+	cfg.LLMConfig = &domain.LLMConfig{
+		Provider:      "mock",
+		Model:         "mock-model-v2",
+		CredentialRef: "secret:custom/byok#api_key",
+	}
+	configProvider.SetConfig(tenantID, agentID, versionID, cfg)
+
+	executor, err := agentruntime.NewLLMExecutor(resolvingClient, configProvider)
+	if err != nil {
+		t.Fatalf("unexpected executor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		Payload: map[string]any{
+			"user": "Alice",
+		},
+	}
+
+	res, err := executor.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+	if res.Status != agentruntime.StatusSuccess {
+		t.Errorf("expected success, got %s", res.Status)
+	}
+	if mockLLM.LastRequest.Prompt != "Hello Alice!" {
+		t.Errorf("unexpected prompt: %q", mockLLM.LastRequest.Prompt)
+	}
+	if mockLLM.LastRequest.Provider != "mock" {
+		t.Errorf("unexpected provider: %q", mockLLM.LastRequest.Provider)
+	}
+	if mockLLM.LastRequest.CredentialRef != "secret:custom/byok#api_key" {
+		t.Errorf("unexpected credential ref: %q", mockLLM.LastRequest.CredentialRef)
+	}
+	if mockLLM.LastRequest.TenantID != tenantID {
+		t.Errorf("unexpected tenant ID: %v", mockLLM.LastRequest.TenantID)
+	}
+}
+
+func TestLLMExecutor_LLMConfigPrecedenceOverGuardrails(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	configProvider := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	tempExplicit := 0.1
+	maxTokensExplicit := 500
+
+	cfg := validConfiguration("Test prompt")
+	// Legacy settings in Guardrails
+	cfg.Guardrails = map[string]any{
+		"provider":    "legacy-provider",
+		"model":       "legacy-model",
+		"temperature": 0.9,
+		"max_tokens":  2000,
+	}
+	// Typed settings in LLMConfig
+	cfg.LLMConfig = &domain.LLMConfig{
+		Provider:      "openai",
+		Model:         "gpt-4o",
+		CredentialRef: "secret:credentials/llm/openai#api_key",
+		Parameters: map[string]any{
+			"temperature": tempExplicit,
+			"max_tokens":  maxTokensExplicit,
+		},
+	}
+
+	configProvider.SetConfig(tenantID, agentID, versionID, cfg)
+
+	executor, err := agentruntime.NewLLMExecutor(mockLLM, configProvider)
+	if err != nil {
+		t.Fatalf("unexpected executor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+	}
+
+	_, err = executor.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+
+	// Verify that LLMConfig values won precedence over Guardrails
+	if mockLLM.LastRequest.Provider != "openai" {
+		t.Errorf("expected provider 'openai', got %q", mockLLM.LastRequest.Provider)
+	}
+	if mockLLM.LastRequest.Model != "gpt-4o" {
+		t.Errorf("expected model 'gpt-4o', got %q", mockLLM.LastRequest.Model)
+	}
+	if mockLLM.LastRequest.Parameters == nil || *mockLLM.LastRequest.Parameters.Temperature != 0.1 {
+		t.Errorf("expected temperature 0.1, got %v", mockLLM.LastRequest.Parameters)
+	}
+	if mockLLM.LastRequest.Parameters == nil || *mockLLM.LastRequest.Parameters.MaxTokens != 500 {
+		t.Errorf("expected max_tokens 500, got %v", mockLLM.LastRequest.Parameters)
+	}
+}
+
+func TestLLMExecutor_LegacyGuardrailsCompatibility(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	configProvider := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	cfg := validConfiguration("Test prompt")
+	// Only Guardrails, no LLMConfig
+	cfg.Guardrails = map[string]any{
+		"provider":       "openai",
+		"model":          "gpt-4-turbo",
+		"credential_ref": "secret:legacy/key#api_key",
+	}
+
+	configProvider.SetConfig(tenantID, agentID, versionID, cfg)
+
+	executor, err := agentruntime.NewLLMExecutor(mockLLM, configProvider)
+	if err != nil {
+		t.Fatalf("unexpected executor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+	}
+
+	_, err = executor.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected execute error: %v", err)
+	}
+
+	if mockLLM.LastRequest.Provider != "openai" {
+		t.Errorf("expected provider 'openai', got %q", mockLLM.LastRequest.Provider)
+	}
+	if mockLLM.LastRequest.Model != "gpt-4-turbo" {
+		t.Errorf("expected model 'gpt-4-turbo', got %q", mockLLM.LastRequest.Model)
+	}
+	if mockLLM.LastRequest.CredentialRef != "secret:legacy/key#api_key" {
+		t.Errorf("expected credential ref 'secret:legacy/key#api_key', got %q", mockLLM.LastRequest.CredentialRef)
 	}
 }

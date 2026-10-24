@@ -27,6 +27,15 @@ var SupportedExecutionModes = map[ExecutionMode]struct{}{
 	ExecutionModeGated:          {},
 }
 
+// LLMConfig specifies the LLM provider, model, credential reference, and generation parameters for an agent version.
+// Plaintext secrets or credentials must never be stored here; use secret references (e.g. "secret:...").
+type LLMConfig struct {
+	Provider      string         `json:"provider,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	CredentialRef string         `json:"credential_ref,omitempty"`
+	Parameters    map[string]any `json:"parameters,omitempty"`
+}
+
 // Configuration represents the versioned configuration of an agent.
 type Configuration struct {
 	PromptTemplate       string         `json:"prompt_template"`
@@ -35,6 +44,7 @@ type Configuration struct {
 	ExecutionMode        ExecutionMode  `json:"execution_mode"`
 	Guardrails           map[string]any `json:"guardrails,omitempty"`
 	Budgets              map[string]any `json:"budgets,omitempty"`
+	LLMConfig            *LLMConfig     `json:"llm_config,omitempty"`
 }
 
 // Value implements driver.Valuer for database JSONB serialization.

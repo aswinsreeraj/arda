@@ -67,6 +67,19 @@ func ProtoToDomainConfig(cfg *ardav1.AgentConfiguration) domain.Configuration {
 	if threshold == 0 {
 		threshold = 0.85
 	}
+	var llmCfg *domain.LLMConfig
+	if cfg.LlmConfig != nil {
+		var params map[string]any
+		if cfg.LlmConfig.Parameters != nil {
+			params = cfg.LlmConfig.Parameters.AsMap()
+		}
+		llmCfg = &domain.LLMConfig{
+			Provider:      cfg.LlmConfig.Provider,
+			Model:         cfg.LlmConfig.Model,
+			CredentialRef: cfg.LlmConfig.CredentialRef,
+			Parameters:    params,
+		}
+	}
 	return domain.Configuration{
 		PromptTemplate:       cfg.PromptTemplate,
 		Tools:                cfg.Tools,
@@ -74,6 +87,7 @@ func ProtoToDomainConfig(cfg *ardav1.AgentConfiguration) domain.Configuration {
 		ExecutionMode:        ProtoToExecutionMode(cfg.ExecutionMode),
 		Guardrails:           guardrails,
 		Budgets:              budgets,
+		LLMConfig:            llmCfg,
 	}
 }
 
@@ -95,6 +109,23 @@ func DomainConfigToProto(cfg domain.Configuration) (*ardav1.AgentConfiguration, 
 			return nil, err
 		}
 	}
+	var protoLLM *ardav1.LLMConfiguration
+	if cfg.LLMConfig != nil {
+		var params *structpb.Struct
+		if cfg.LLMConfig.Parameters != nil {
+			var err error
+			params, err = structpb.NewStruct(cfg.LLMConfig.Parameters)
+			if err != nil {
+				return nil, err
+			}
+		}
+		protoLLM = &ardav1.LLMConfiguration{
+			Provider:      cfg.LLMConfig.Provider,
+			Model:         cfg.LLMConfig.Model,
+			CredentialRef: cfg.LLMConfig.CredentialRef,
+			Parameters:    params,
+		}
+	}
 	tools := cfg.Tools
 	if tools == nil {
 		tools = []string{}
@@ -106,6 +137,7 @@ func DomainConfigToProto(cfg domain.Configuration) (*ardav1.AgentConfiguration, 
 		ExecutionMode:        ExecutionModeToProto(cfg.ExecutionMode),
 		Guardrails:           guardrails,
 		Budgets:              budgets,
+		LlmConfig:            protoLLM,
 	}, nil
 }
 

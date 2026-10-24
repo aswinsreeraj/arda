@@ -45,6 +45,25 @@ message AgentConfiguration {
   // Operational budget limits (e.g., max_cost_cents, monthly_token_limit).
   // Stored as JSONB in PostgreSQL.
   google.protobuf.Struct budgets = 6;
+
+  // Explicit LLM provider, model, and BYOK credential configuration.
+  LLMConfiguration llm_config = 7;
+}
+
+// LLMConfiguration defines explicit provider, model, secret reference, and generation parameters.
+// Raw API keys or secrets must never be placed in this message; use secret references (e.g. "secret:...").
+message LLMConfiguration {
+  // Provider identifier (e.g. "openai", "anthropic", "mock").
+  string provider = 1;
+
+  // Model identifier (e.g. "gpt-4o", "claude-3-5-sonnet").
+  string model = 2;
+
+  // Secret reference for tenant BYOK credential (e.g. "secret:credentials/llm/openai#api_key").
+  string credential_ref = 3;
+
+  // Model-specific generation parameters (temperature, max_tokens, top_p, etc.).
+  google.protobuf.Struct parameters = 4;
 }
 
 // Agent represents the top-level entity owning versions within a tenant.
