@@ -24,7 +24,8 @@ func NewService(vaultStore vault.SecretStore, store Store) *Service {
 }
 
 func credentialKeyAndField(category Category, provider string) (string, string) {
-	key := fmt.Sprintf("credentials/%s/%s", category, strings.TrimSpace(provider))
+	cleanProvider := strings.ToLower(strings.TrimSpace(provider))
+	key := fmt.Sprintf("credentials/%s/%s", category, cleanProvider)
 	field := "api_key"
 	if category == CategoryMCP {
 		field = "access_token"
@@ -42,7 +43,8 @@ func (s *Service) SaveCredential(ctx context.Context, tenantID uuid.UUID, req Sa
 		return nil, err
 	}
 
-	key, field := credentialKeyAndField(req.Category, req.Provider)
+	cleanProvider := strings.ToLower(strings.TrimSpace(req.Provider))
+	key, field := credentialKeyAndField(req.Category, cleanProvider)
 
 	// Write secret to tenant-scoped Vault KV v2 storage
 	if err := s.vaultStore.WriteSecret(ctx, tenantID, key, map[string]string{
@@ -57,7 +59,7 @@ func (s *Service) SaveCredential(ctx context.Context, tenantID uuid.UUID, req Sa
 		ID:        uuid.New(),
 		TenantID:  tenantID,
 		Category:  req.Category,
-		Provider:  req.Provider,
+		Provider:  cleanProvider,
 		Reference: reference,
 	}
 
@@ -87,7 +89,7 @@ func (s *Service) ListCredentials(ctx context.Context, tenantID uuid.UUID) ([]Cr
 	return s.store.List(ctx, tenantID)
 }
 
-// DeleteCredential removes the secret from Vault and deletes the metadata.
+// DeleteCredential permanently removes the secret and all historical versions from Vault and deletes the metadata.
 func (s *Service) DeleteCredential(ctx context.Context, tenantID, id uuid.UUID) error {
 	if tenantID == uuid.Nil {
 		return errorsNew("missing or invalid tenant identity")
@@ -102,7 +104,7 @@ func (s *Service) DeleteCredential(ctx context.Context, tenantID, id uuid.UUID) 
 	}
 
 	key, _ := credentialKeyAndField(cred.Category, cred.Provider)
-	_ = s.vaultStore.DeleteSecret(ctx, tenantID, key)
+	_ = s.vaultStore.DestroySecret(ctx, tenantID, key)
 
 	return s.store.Delete(ctx, tenantID, id)
 }

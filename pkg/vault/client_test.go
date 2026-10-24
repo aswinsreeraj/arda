@@ -52,8 +52,15 @@ func (s *mockVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL format: /v1/{mount}/data/{path...}
+	// URL format: /v1/{mount}/data/{path...} or /v1/{mount}/metadata/{path...}
 	path := r.URL.Path
+	if strings.HasPrefix(path, "/v1/secret/metadata/") && r.Method == http.MethodDelete {
+		subPath := strings.TrimPrefix(path, "/v1/secret/metadata/")
+		delete(s.storage, subPath)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	prefix := "/v1/secret/data/"
 	if !strings.HasPrefix(path, prefix) {
 		w.WriteHeader(http.StatusNotFound)
@@ -529,5 +536,42 @@ func TestRegistryConfigurationCompatibility(t *testing.T) {
 	}
 	if parsedField.Key != "mcp/slack" || parsedField.Field != "token" {
 		t.Fatalf("mismatch in parsed field reference: %+v", parsedField)
+	}
+}
+
+func TestVaultClient_DestroySecretKVv2Metadata(t *testing.T) {
+	mock := newMockVaultServer("test-token")
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	client, err := vault.NewClient(vault.Config{
+		Address: ts.URL,
+		Token:   "test-token",
+	})
+	if err != nil {
+		t.Fatalf("unexpected NewClient error: %v", err)
+	}
+
+	tenantID := uuid.New()
+	key := "credentials/llm/openai"
+
+	// 1. Write secret
+	err = client.WriteSecret(context.Background(), tenantID, key, map[string]string{
+		"api_key": "fake-openai-key-to-destroy-12345",
+	})
+	if err != nil {
+		t.Fatalf("failed to write secret: %v", err)
+	}
+
+	// 2. Destroy secret permanently (purging KV v2 metadata)
+	err = client.DestroySecret(context.Background(), tenantID, key)
+	if err != nil {
+		t.Fatalf("failed to destroy secret: %v", err)
+	}
+
+	// 3. Confirm secret is gone
+	_, err = client.ReadSecret(context.Background(), tenantID, key)
+	if !errors.Is(err, vault.ErrSecretNotFound) {
+		t.Fatalf("expected ErrSecretNotFound after destroy, got: %v", err)
 	}
 }

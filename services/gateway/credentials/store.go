@@ -3,6 +3,7 @@ package credentials
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,9 +109,10 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id uuid.UUID) (*Crede
 }
 
 func (s *PostgresStore) GetByCategoryAndProvider(ctx context.Context, tenantID uuid.UUID, category Category, provider string) (*Credential, error) {
+	cleanProvider := strings.ToLower(strings.TrimSpace(provider))
 	var model CredentialModel
 	err := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND category = ? AND provider = ?", tenantID, string(category), provider).
+		Where("tenant_id = ? AND category = ? AND LOWER(provider) = ?", tenantID, string(category), cleanProvider).
 		First(&model).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -173,8 +175,11 @@ func (m *MemoryStore) Save(ctx context.Context, cred *Credential) error {
 	}
 	cred.UpdatedAt = now
 
+	cleanProvider := strings.ToLower(strings.TrimSpace(cred.Provider))
+	cred.Provider = cleanProvider
+
 	for _, c := range m.creds {
-		if c.TenantID == cred.TenantID && c.Category == cred.Category && c.Provider == cred.Provider {
+		if c.TenantID == cred.TenantID && c.Category == cred.Category && strings.EqualFold(c.Provider, cleanProvider) {
 			cred.ID = c.ID
 			cred.CreatedAt = c.CreatedAt
 			break
@@ -197,11 +202,12 @@ func (m *MemoryStore) Get(ctx context.Context, tenantID, id uuid.UUID) (*Credent
 }
 
 func (m *MemoryStore) GetByCategoryAndProvider(ctx context.Context, tenantID uuid.UUID, category Category, provider string) (*Credential, error) {
+	cleanProvider := strings.ToLower(strings.TrimSpace(provider))
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	for _, c := range m.creds {
-		if c.TenantID == tenantID && c.Category == category && c.Provider == provider {
+		if c.TenantID == tenantID && c.Category == category && strings.EqualFold(c.Provider, cleanProvider) {
 			copied := *c
 			return &copied, nil
 		}

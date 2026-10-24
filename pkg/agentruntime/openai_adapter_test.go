@@ -229,3 +229,241 @@ func TestOpenAIAdapter_TimeoutAndCancellation(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestOpenAIAdapter_ReasoningModelRestrictions(t *testing.T) {
+	var capturedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"model": "o1-mini",
+			"choices": [{"message": {"content": "Reasoning model completion"}}],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 15, "total_tokens": 25}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := agentruntime.NewOpenAIAdapter(
+		agentruntime.WithOpenAIBaseURL(server.URL),
+		agentruntime.WithOpenAIHTTPClient(server.Client()),
+	)
+
+	// 1. o1 rejects custom temperature != 1.0
+	customTemp := 0.7
+	_, err := adapter.GenerateWithCredential(context.Background(), "sk-test-key", agentruntime.LLMRequest{
+		Prompt: "Solve math problem",
+		Model:  "o1",
+		Parameters: &agentruntime.GenerationParams{
+			Temperature: &customTemp,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected permanent error for o1 with custom temperature, got nil")
+	}
+	if agentruntime.ClassifyError(err) != agentruntime.CategoryPermanent {
+		t.Fatalf("expected permanent category, got %s", agentruntime.ClassifyError(err))
+	}
+	if !strings.Contains(err.Error(), "temperature") {
+		t.Fatalf("expected error mentioning temperature, got: %v", err)
+	}
+
+	// 2. o1 rejects top_p
+	topP := 0.95
+	_, err = adapter.GenerateWithCredential(context.Background(), "sk-test-key", agentruntime.LLMRequest{
+		Prompt: "Solve logic puzzle",
+		Model:  "o1-mini",
+		Parameters: &agentruntime.GenerationParams{
+			TopP: &topP,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected permanent error for o1-mini with top_p, got nil")
+	}
+	if agentruntime.ClassifyError(err) != agentruntime.CategoryPermanent {
+		t.Fatalf("expected permanent category, got %s", agentruntime.ClassifyError(err))
+	}
+
+	// 3. o1 maps max_tokens to max_completion_tokens
+	maxTok := 500
+	tempDefault := 1.0
+	resp, err := adapter.GenerateWithCredential(context.Background(), "sk-test-key", agentruntime.LLMRequest{
+		Prompt: "Explain general relativity",
+		Model:  "o1-mini",
+		Parameters: &agentruntime.GenerationParams{
+			Temperature: &tempDefault,
+			MaxTokens:   &maxTok,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for valid o1 request: %v", err)
+	}
+	if resp.Content != "Reasoning model completion" {
+		t.Fatalf("unexpected response content: %s", resp.Content)
+	}
+
+	// Verify request JSON body contained max_completion_tokens, not max_tokens
+	if _, ok := capturedBody["max_tokens"]; ok {
+		t.Fatalf("o1 request must NOT have max_tokens in body: %v", capturedBody)
+	}
+	if maxComp, ok := capturedBody["max_completion_tokens"]; !ok || int(maxComp.(float64)) != 500 {
+		t.Fatalf("expected max_completion_tokens=500 in o1 request body, got: %v", capturedBody)
+	}
+}
+
+func TestOpenAIAdapter_ParameterBoundsValidation(t *testing.T) {
+	adapter := agentruntime.NewOpenAIAdapter()
+
+	testCases := []struct {
+		name   string
+		params *agentruntime.GenerationParams
+		errSub string
+	}{
+		{
+			name: "Temperature too high (>2.0)",
+			params: func() *agentruntime.GenerationParams {
+				v := 2.5
+				return &agentruntime.GenerationParams{Temperature: &v}
+			}(),
+			errSub: "temperature must be between 0.0 and 2.0",
+		},
+		{
+			name: "Temperature negative (<0.0)",
+			params: func() *agentruntime.GenerationParams {
+				v := -0.5
+				return &agentruntime.GenerationParams{Temperature: &v}
+			}(),
+			errSub: "temperature must be between 0.0 and 2.0",
+		},
+		{
+			name: "TopP too high (>1.0)",
+			params: func() *agentruntime.GenerationParams {
+				v := 1.2
+				return &agentruntime.GenerationParams{TopP: &v}
+			}(),
+			errSub: "top_p must be between 0.0 and 1.0",
+		},
+		{
+			name: "TopP negative (<0.0)",
+			params: func() *agentruntime.GenerationParams {
+				v := -0.1
+				return &agentruntime.GenerationParams{TopP: &v}
+			}(),
+			errSub: "top_p must be between 0.0 and 1.0",
+		},
+		{
+			name: "MaxTokens zero or negative",
+			params: func() *agentruntime.GenerationParams {
+				v := 0
+				return &agentruntime.GenerationParams{MaxTokens: &v}
+			}(),
+			errSub: "max_tokens must be greater than 0",
+		},
+		{
+			name: "Stop sequences > 4 items",
+			params: &agentruntime.GenerationParams{
+				Stop: []string{"s1", "s2", "s3", "s4", "s5"},
+			},
+			errSub: "stop sequence list cannot exceed 4 items",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := adapter.GenerateWithCredential(context.Background(), "sk-fake-key", agentruntime.LLMRequest{
+				Prompt:     "test",
+				Model:      "gpt-4o",
+				Parameters: tc.params,
+			})
+			if err == nil {
+				t.Fatalf("expected parameter validation error, got nil")
+			}
+			if agentruntime.ClassifyError(err) != agentruntime.CategoryPermanent {
+				t.Fatalf("expected permanent category, got %s", agentruntime.ClassifyError(err))
+			}
+			if !strings.Contains(err.Error(), tc.errSub) {
+				t.Fatalf("expected error containing %q, got: %v", tc.errSub, err)
+			}
+		})
+	}
+}
+
+func TestOpenAIAdapter_UnexpectedContentTypeAndMalformedJSON(t *testing.T) {
+	// 1. 200 OK with HTML content-type
+	htmlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body>502 Bad Gateway Proxy Error</body></html>`))
+	}))
+	defer htmlServer.Close()
+
+	adapterHTML := agentruntime.NewOpenAIAdapter(
+		agentruntime.WithOpenAIBaseURL(htmlServer.URL),
+		agentruntime.WithOpenAIHTTPClient(htmlServer.Client()),
+	)
+
+	_, err := adapterHTML.GenerateWithCredential(context.Background(), "sk-test-key", agentruntime.LLMRequest{
+		Prompt: "test",
+		Model:  "gpt-4o",
+	})
+	if err == nil {
+		t.Fatal("expected error for HTML content type, got nil")
+	}
+	if agentruntime.ClassifyError(err) != agentruntime.CategoryTransient {
+		t.Fatalf("expected transient error for unexpected content type, got %s (err: %v)", agentruntime.ClassifyError(err), err)
+	}
+
+	// 2. 200 OK with malformed JSON
+	badJSONServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices": [{"message": {"role": "assista`)) // Truncated
+	}))
+	defer badJSONServer.Close()
+
+	adapterJSON := agentruntime.NewOpenAIAdapter(
+		agentruntime.WithOpenAIBaseURL(badJSONServer.URL),
+		agentruntime.WithOpenAIHTTPClient(badJSONServer.Client()),
+	)
+
+	_, err = adapterJSON.GenerateWithCredential(context.Background(), "sk-test-key", agentruntime.LLMRequest{
+		Prompt: "test",
+		Model:  "gpt-4o",
+	})
+	if err == nil {
+		t.Fatal("expected error for malformed JSON, got nil")
+	}
+	if agentruntime.ClassifyError(err) != agentruntime.CategoryTransient {
+		t.Fatalf("expected transient error for malformed JSON, got %s (err: %v)", agentruntime.ClassifyError(err), err)
+	}
+}
+
+func TestOpenAIAdapter_TransportSecretRedaction(t *testing.T) {
+	fakeSecret := "sk-fake-secret-never-expose-99999"
+
+	// Mock server that returns 400 with the fake secret in error message
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error": {"message": "Invalid token sk-fake-secret-never-expose-99999 provided for organization"}}`))
+	}))
+	defer server.Close()
+
+	adapter := agentruntime.NewOpenAIAdapter(
+		agentruntime.WithOpenAIBaseURL(server.URL),
+		agentruntime.WithOpenAIHTTPClient(server.Client()),
+	)
+
+	_, err := adapter.GenerateWithCredential(context.Background(), fakeSecret, agentruntime.LLMRequest{
+		Prompt: "test",
+		Model:  "gpt-4o",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, fakeSecret) {
+		t.Fatalf("CRITICAL SECURITY VIOLATION: error leaked fakeSecret! Error: %s", errMsg)
+	}
+}

@@ -40,14 +40,18 @@ func (a *testAdapter) IsModelSupported(model string) bool {
 }
 
 func (a *testAdapter) Generate(ctx context.Context, req agentruntime.LLMRequest) (agentruntime.LLMResponse, error) {
+	key, _ := agentruntime.APIKeyFromContext(ctx)
+	return a.GenerateWithCredential(ctx, key, req)
+}
+
+func (a *testAdapter) GenerateWithCredential(ctx context.Context, credential string, req agentruntime.LLMRequest) (agentruntime.LLMResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return agentruntime.LLMResponse{}, err
 	}
 	if a.err != nil {
 		return agentruntime.LLMResponse{}, a.err
 	}
-	key, _ := agentruntime.APIKeyFromContext(ctx)
-	a.capturedKey = key
+	a.capturedKey = credential
 	a.lastReq = req
 	if a.response.Content != "" {
 		return a.response, nil
@@ -288,5 +292,129 @@ func TestResolvingLLMClient_ContextCancellation(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestResolvingLLMClient_DirectCredentialPassingNoContextPollution(t *testing.T) {
+	registry := agentruntime.NewProviderRegistry()
+	var ctxKeyPresent bool
+
+	adapter := &testAdapter{
+		providerID: "openai",
+	}
+	_ = registry.Register(adapter)
+
+	credResolver := agentruntime.NewMockCredentialResolver()
+	tenantID := uuid.New()
+	secretKey := "sk-fake-secret-never-expose-direct-passing-12345"
+	credResolver.SetDefaultCredential(tenantID, "openai", secretKey)
+
+	client, err := agentruntime.NewResolvingLLMClient(registry, credResolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Make request
+	ctx := context.Background()
+	resp, err := client.Generate(ctx, agentruntime.LLMRequest{
+		Prompt:   "test prompt",
+		Provider: "openai",
+		TenantID: tenantID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected generate error: %v", err)
+	}
+	if resp.Content != "test adapter response" {
+		t.Fatalf("unexpected response: %s", resp.Content)
+	}
+
+	// Verify key was passed explicitly to adapter
+	if adapter.capturedKey != secretKey {
+		t.Fatalf("expected adapter to receive credential directly, got %q", adapter.capturedKey)
+	}
+
+	// Verify context was NOT polluted with API key
+	_, ctxKeyPresent = agentruntime.APIKeyFromContext(ctx)
+	if ctxKeyPresent {
+		t.Fatalf("CRITICAL SECURITY VIOLATION: general context was polluted with API key!")
+	}
+}
+
+func TestResolvingLLMClient_NoSilentFallbackToMock(t *testing.T) {
+	registry := agentruntime.NewProviderRegistry()
+
+	// Register both mock and openai
+	mockClient := agentruntime.NewMockLLMClient()
+	_ = registry.Register(mockClient)
+
+	openAIAdapter := &testAdapter{
+		providerID: "openai",
+		err:        errors.New("simulated openai connection failure"),
+	}
+	_ = registry.Register(openAIAdapter)
+
+	credResolver := agentruntime.NewMockCredentialResolver()
+	tenantID := uuid.New()
+	credResolver.SetDefaultCredential(tenantID, "openai", "sk-test-key")
+
+	client, err := agentruntime.NewResolvingLLMClient(
+		registry,
+		credResolver,
+		agentruntime.WithDefaultProvider("mock"), // Even if default provider is mock!
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Request explicitly specifies provider "openai"
+	_, err = client.Generate(context.Background(), agentruntime.LLMRequest{
+		Prompt:   "hello",
+		Provider: "openai",
+		TenantID: tenantID,
+	})
+	if err == nil {
+		t.Fatalf("expected error from failed openai call, got nil")
+	}
+
+	// Assert mock was NEVER called as a silent fallback
+	if mockClient.Calls > 0 {
+		t.Fatalf("SECURITY VIOLATION: mock client was silently called when configured provider failed! Calls: %d", mockClient.Calls)
+	}
+}
+
+func TestResolvingLLMClient_CrossTenantIsolation(t *testing.T) {
+	registry := agentruntime.NewProviderRegistry()
+	adapter := &testAdapter{providerID: "openai"}
+	_ = registry.Register(adapter)
+
+	credResolver := agentruntime.NewMockCredentialResolver()
+	tenantA := uuid.New()
+	tenantB := uuid.New()
+
+	credResolver.SetDefaultCredential(tenantA, "openai", "sk-secret-tenant-a")
+
+	client, _ := agentruntime.NewResolvingLLMClient(registry, credResolver)
+
+	// Tenant A succeeds
+	_, err := client.Generate(context.Background(), agentruntime.LLMRequest{
+		Prompt:   "test",
+		Provider: "openai",
+		TenantID: tenantA,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for tenant A: %v", err)
+	}
+	if adapter.capturedKey != "sk-secret-tenant-a" {
+		t.Fatalf("expected key for tenant A, got %s", adapter.capturedKey)
+	}
+
+	// Tenant B cannot resolve Tenant A's credential
+	_, err = client.Generate(context.Background(), agentruntime.LLMRequest{
+		Prompt:   "test",
+		Provider: "openai",
+		TenantID: tenantB,
+	})
+	if err == nil || !errors.Is(err, agentruntime.ErrCredentialNotFound) {
+		t.Fatalf("expected ErrCredentialNotFound for tenant B, got %v", err)
 	}
 }

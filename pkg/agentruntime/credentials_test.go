@@ -236,3 +236,36 @@ func TestMockCredentialResolver(t *testing.T) {
 		t.Fatalf("expected simulated error, got %v", err)
 	}
 }
+
+func TestVaultCredentialResolver_PathTraversalAndMalformedReferences(t *testing.T) {
+	memStore := vault.NewMemoryStore()
+	tenantID := uuid.New()
+	resolver, _ := agentruntime.NewVaultCredentialResolver(memStore)
+
+	maliciousRefs := []struct {
+		name string
+		ref  string
+	}{
+		{"Relative path traversal dot-dot", "secret:../../etc/passwd"},
+		{"Absolute path with slash", "secret:/etc/shadow"},
+		{"Backslash traversal", "secret:..\\..\\tenant\\key"},
+		{"URL encoded dot-dot", "secret:%2e%2e%2fcredentials"},
+		{"Dot segment traversal", "secret:./foo/bar"},
+		{"Empty field selector", "secret:credentials/llm/openai#"},
+		{"Invalid field characters", "secret:credentials/llm/openai#bad field!"},
+		{"Double slash segment", "secret:credentials//llm"},
+		{"Trailing slash path", "secret:credentials/llm/"},
+	}
+
+	for _, tc := range maliciousRefs {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolver.ResolveCredential(context.Background(), tenantID, "openai", tc.ref)
+			if err == nil {
+				t.Fatalf("SECURITY VIOLATION: expected error rejecting reference %q, got nil", tc.ref)
+			}
+			if !errors.Is(err, agentruntime.ErrInvalidConfiguration) && !errors.Is(err, agentruntime.ErrPermanent) {
+				t.Fatalf("expected permanent/invalid configuration error, got: %v", err)
+			}
+		})
+	}
+}

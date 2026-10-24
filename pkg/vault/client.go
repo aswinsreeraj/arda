@@ -26,8 +26,11 @@ type SecretStore interface {
 	// ReadSecretValue resolves a secret reference and returns a single secret string value.
 	ReadSecretValue(ctx context.Context, tenantID uuid.UUID, ref string) (string, error)
 
-	// DeleteSecret removes a secret at the tenant-scoped path.
+	// DeleteSecret removes a secret at the tenant-scoped path (soft-deletes current version in KV v2).
 	DeleteSecret(ctx context.Context, tenantID uuid.UUID, key string) error
+
+	// DestroySecret permanently destroys a secret and all historical versions and metadata in KV v2.
+	DestroySecret(ctx context.Context, tenantID uuid.UUID, key string) error
 }
 
 // TokenProvider defines an interface for obtaining a Vault authentication token.
@@ -305,6 +308,17 @@ func (c *Client) DeleteSecret(ctx context.Context, tenantID uuid.UUID, key strin
 	}
 
 	endpoint := fmt.Sprintf("%s/v1/%s/data/%s", c.address, c.mountPath, tenantPath)
+	return c.executeRequest(ctx, http.MethodDelete, endpoint, key, nil, nil)
+}
+
+// DestroySecret permanently destroys a secret and all historical versions and metadata in KV v2.
+func (c *Client) DestroySecret(ctx context.Context, tenantID uuid.UUID, key string) error {
+	tenantPath, err := c.buildTenantPath(tenantID, key)
+	if err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf("%s/v1/%s/metadata/%s", c.address, c.mountPath, tenantPath)
 	return c.executeRequest(ctx, http.MethodDelete, endpoint, key, nil, nil)
 }
 

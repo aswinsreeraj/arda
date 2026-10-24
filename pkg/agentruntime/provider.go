@@ -19,6 +19,7 @@ type ProviderAdapter interface {
 	ProviderID() string
 	SupportedModels() []string
 	IsModelSupported(model string) bool
+	GenerateWithCredential(ctx context.Context, credential string, req LLMRequest) (LLMResponse, error)
 }
 
 type wrappedAdapter struct {
@@ -49,6 +50,18 @@ func (w *wrappedAdapter) IsModelSupported(model string) bool {
 		}
 	}
 	return false
+}
+
+func (w *wrappedAdapter) GenerateWithCredential(ctx context.Context, credential string, req LLMRequest) (LLMResponse, error) {
+	if credAdapter, ok := w.LLMClient.(interface {
+		GenerateWithCredential(ctx context.Context, credential string, req LLMRequest) (LLMResponse, error)
+	}); ok {
+		return credAdapter.GenerateWithCredential(ctx, credential, req)
+	}
+	if credential != "" {
+		ctx = WithAPIKey(ctx, credential)
+	}
+	return w.LLMClient.Generate(ctx, req)
 }
 
 // WrapClientAsAdapter adapts any LLMClient implementation into a ProviderAdapter.
@@ -223,7 +236,7 @@ func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMR
 	req.Model = model
 
 	// 4. Resolve credentials for provider if required
-	reqCtx := ctx
+	var apiKey string
 	if provider != "mock" {
 		if c.credentialResolver == nil {
 			return LLMResponse{}, fmt.Errorf("%w: credential resolver is not configured for provider %q", ErrMissingCredential, provider)
@@ -232,16 +245,15 @@ func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMR
 			return LLMResponse{}, fmt.Errorf("%w: tenant ID is required to resolve credentials for provider %q", ErrInvalidTenant, provider)
 		}
 
-		apiKey, err := c.credentialResolver.ResolveCredential(reqCtx, req.TenantID, provider, req.CredentialRef)
+		var err error
+		apiKey, err = c.credentialResolver.ResolveCredential(ctx, req.TenantID, provider, req.CredentialRef)
 		if err != nil {
 			return LLMResponse{}, err
 		}
-
-		reqCtx = WithAPIKey(reqCtx, apiKey)
 	}
 
-	// 5. Invoke the selected provider adapter
-	resp, err := adapter.Generate(reqCtx, req)
+	// 5. Invoke the selected provider adapter directly with explicit credential parameter
+	resp, err := adapter.GenerateWithCredential(ctx, apiKey, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			return LLMResponse{}, context.Canceled

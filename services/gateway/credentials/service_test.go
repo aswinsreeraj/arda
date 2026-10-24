@@ -70,6 +70,10 @@ func (m *mockVaultStore) DeleteSecret(ctx context.Context, tenantID uuid.UUID, k
 	return nil
 }
 
+func (m *mockVaultStore) DestroySecret(ctx context.Context, tenantID uuid.UUID, key string) error {
+	return m.DeleteSecret(ctx, tenantID, key)
+}
+
 func setupTestService() (*credentials.Service, *mockVaultStore, credentials.Store) {
 	vStore := newMockVaultStore()
 	memStore := credentials.NewMemoryStore()
@@ -307,5 +311,114 @@ func TestDeleteCredential(t *testing.T) {
 	_, err = vStore.ReadSecretValue(ctx, tenantID, cred.Reference)
 	if err == nil {
 		t.Errorf("expected vault read to fail after deletion, got nil")
+	}
+}
+
+func TestCredential_ProviderCaseNormalization(t *testing.T) {
+	svc, vStore, store := setupTestService()
+	ctx := context.Background()
+	tenantID := uuid.New()
+
+	// Register with mixed case and leading/trailing whitespace
+	cred, err := svc.SaveCredential(ctx, tenantID, credentials.SaveCredentialRequest{
+		Category:    credentials.CategoryLLM,
+		Provider:    "  OpenAI  ",
+		SecretValue: "fake-key-123",
+	})
+	if err != nil {
+		t.Fatalf("failed to save credential: %v", err)
+	}
+
+	if cred.Provider != "openai" {
+		t.Fatalf("expected provider to be normalized to 'openai', got %q", cred.Provider)
+	}
+	expectedRef := "secret:credentials/llm/openai#api_key"
+	if cred.Reference != expectedRef {
+		t.Fatalf("expected reference %q, got %q", expectedRef, cred.Reference)
+	}
+
+	// Lookup via store with uppercase should succeed
+	found, err := store.GetByCategoryAndProvider(ctx, tenantID, credentials.CategoryLLM, "OPENAI")
+	if err != nil {
+		t.Fatalf("expected case-insensitive lookup to succeed, got %v", err)
+	}
+	if found.ID != cred.ID {
+		t.Fatalf("expected found ID %s to match %s", found.ID, cred.ID)
+	}
+
+	// Verify reading from Vault works with normalized reference
+	val, err := vStore.ReadSecretValue(ctx, tenantID, found.Reference)
+	if err != nil || val != "fake-key-123" {
+		t.Fatalf("failed to read secret from vault with normalized reference: %v", err)
+	}
+}
+
+func TestCredential_SecretIsolationNeverExposed(t *testing.T) {
+	svc, _, _ := setupTestService()
+	ctx := context.Background()
+	tenantID := uuid.New()
+	secretKey := "sk-fake-secret-never-expose-99999"
+
+	cred, err := svc.SaveCredential(ctx, tenantID, credentials.SaveCredentialRequest{
+		Category:    credentials.CategoryLLM,
+		Provider:    "openai",
+		SecretValue: secretKey,
+	})
+	if err != nil {
+		t.Fatalf("failed to save credential: %v", err)
+	}
+
+	// Assert secret is NEVER present in credential metadata
+	if strings.Contains(cred.Reference, secretKey) {
+		t.Fatalf("SECRET LEAK: secret key present in Reference: %s", cred.Reference)
+	}
+	if strings.Contains(cred.Provider, secretKey) {
+		t.Fatalf("SECRET LEAK: secret key present in Provider: %s", cred.Provider)
+	}
+
+	// Verify verification response does not leak secret
+	verifyResp, err := svc.VerifyCredential(ctx, tenantID, cred.ID)
+	if err != nil {
+		t.Fatalf("failed to verify credential: %v", err)
+	}
+	if strings.Contains(verifyResp.Message, secretKey) {
+		t.Fatalf("SECRET LEAK: secret key present in verification message: %s", verifyResp.Message)
+	}
+	if strings.Contains(verifyResp.Reference, secretKey) {
+		t.Fatalf("SECRET LEAK: secret key present in verification reference: %s", verifyResp.Reference)
+	}
+}
+
+func TestCredential_CrossTenantIsolation(t *testing.T) {
+	svc, _, _ := setupTestService()
+	ctx := context.Background()
+	tenantA := uuid.New()
+	tenantB := uuid.New()
+
+	credA, err := svc.SaveCredential(ctx, tenantA, credentials.SaveCredentialRequest{
+		Category:    credentials.CategoryLLM,
+		Provider:    "openai",
+		SecretValue: "fake-key-tenant-a",
+	})
+	if err != nil {
+		t.Fatalf("failed to save credential for tenant A: %v", err)
+	}
+
+	// Tenant B cannot get Tenant A's credential
+	_, err = svc.GetCredential(ctx, tenantB, credA.ID)
+	if err == nil {
+		t.Fatalf("SECURITY VIOLATION: expected error accessing cross-tenant credential, got nil")
+	}
+
+	// Tenant B cannot verify Tenant A's credential
+	_, err = svc.VerifyCredential(ctx, tenantB, credA.ID)
+	if err == nil {
+		t.Fatalf("SECURITY VIOLATION: expected error verifying cross-tenant credential, got nil")
+	}
+
+	// Tenant B cannot delete Tenant A's credential
+	err = svc.DeleteCredential(ctx, tenantB, credA.ID)
+	if err == nil {
+		t.Fatalf("SECURITY VIOLATION: expected error deleting cross-tenant credential, got nil")
 	}
 }

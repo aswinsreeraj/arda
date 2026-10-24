@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ var DefaultOpenAIModels = []string{
 	"gpt-3.5-turbo",
 	"o1",
 	"o1-mini",
+	"o1-preview",
 	"o3-mini",
 }
 
@@ -135,12 +137,13 @@ type openAIChatMessage struct {
 }
 
 type openAIChatRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openAIChatMessage `json:"messages"`
-	Temperature *float64            `json:"temperature,omitempty"`
-	MaxTokens   *int                `json:"max_tokens,omitempty"`
-	TopP        *float64            `json:"top_p,omitempty"`
-	Stop        []string            `json:"stop,omitempty"`
+	Model               string              `json:"model"`
+	Messages            []openAIChatMessage `json:"messages"`
+	Temperature         *float64            `json:"temperature,omitempty"`
+	MaxTokens           *int                `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
+	TopP                *float64            `json:"top_p,omitempty"`
+	Stop                []string            `json:"stop,omitempty"`
 }
 
 type openAIChatResponse struct {
@@ -162,9 +165,20 @@ type openAIChatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// Generate formats the request, invokes the OpenAI Chat Completions API with the in-memory API key,
-// and maps the response into an LLMResponse.
+func isReasoningModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3")
+}
+
+// Generate fulfills LLMClient by reading the API key from context (if present) and delegating to GenerateWithCredential.
 func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMResponse, error) {
+	apiKey, _ := APIKeyFromContext(ctx)
+	return a.GenerateWithCredential(ctx, apiKey, req)
+}
+
+// GenerateWithCredential fulfills ProviderAdapter by invoking the OpenAI Chat Completions API with the explicitly
+// passed API key, strictly avoiding context credential pollution and ensuring credential isolation.
+func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey string, req LLMRequest) (LLMResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return LLMResponse{}, err
 	}
@@ -172,9 +186,9 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 		return LLMResponse{}, err
 	}
 
-	apiKey, ok := APIKeyFromContext(ctx)
-	if !ok || strings.TrimSpace(apiKey) == "" {
-		return LLMResponse{}, NewPermanentError("missing required API key in context for OpenAI provider", ErrMissingCredential)
+	cleanKey := strings.TrimSpace(apiKey)
+	if cleanKey == "" {
+		return LLMResponse{}, NewPermanentError("missing required API key for OpenAI provider", ErrMissingCredential)
 	}
 
 	model := strings.TrimSpace(req.Model)
@@ -192,12 +206,54 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 		},
 	}
 
+	isReasoning := isReasoningModel(model)
+
 	if req.Parameters != nil {
-		chatReq.Temperature = req.Parameters.Temperature
-		chatReq.MaxTokens = req.Parameters.MaxTokens
-		chatReq.TopP = req.Parameters.TopP
-		if len(req.Parameters.Stop) > 0 {
-			chatReq.Stop = req.Parameters.Stop
+		// Stop sequences validation across all models
+		if len(req.Parameters.Stop) > 4 {
+			return LLMResponse{}, NewPermanentError("stop sequence list cannot exceed 4 items", ErrPermanent)
+		}
+
+		if isReasoning {
+			// Reasoning models (o1, o3 series) parameter restrictions
+			if req.Parameters.Temperature != nil && *req.Parameters.Temperature != 1.0 {
+				return LLMResponse{}, NewPermanentError(fmt.Sprintf("openai reasoning model %q does not support custom temperature (only default 1.0 is supported)", model), ErrPermanent)
+			}
+			if req.Parameters.TopP != nil {
+				return LLMResponse{}, NewPermanentError(fmt.Sprintf("openai reasoning model %q does not support top_p parameter", model), ErrPermanent)
+			}
+			if req.Parameters.MaxTokens != nil {
+				if *req.Parameters.MaxTokens <= 0 {
+					return LLMResponse{}, NewPermanentError("max_tokens must be greater than 0", ErrPermanent)
+				}
+				chatReq.MaxCompletionTokens = req.Parameters.MaxTokens
+			}
+			if len(req.Parameters.Stop) > 0 {
+				chatReq.Stop = req.Parameters.Stop
+			}
+		} else {
+			// Standard chat models (e.g. gpt-4o, gpt-4-turbo, gpt-3.5-turbo)
+			if req.Parameters.Temperature != nil {
+				if *req.Parameters.Temperature < 0.0 || *req.Parameters.Temperature > 2.0 {
+					return LLMResponse{}, NewPermanentError("temperature must be between 0.0 and 2.0", ErrPermanent)
+				}
+				chatReq.Temperature = req.Parameters.Temperature
+			}
+			if req.Parameters.TopP != nil {
+				if *req.Parameters.TopP < 0.0 || *req.Parameters.TopP > 1.0 {
+					return LLMResponse{}, NewPermanentError("top_p must be between 0.0 and 1.0", ErrPermanent)
+				}
+				chatReq.TopP = req.Parameters.TopP
+			}
+			if req.Parameters.MaxTokens != nil {
+				if *req.Parameters.MaxTokens <= 0 {
+					return LLMResponse{}, NewPermanentError("max_tokens must be greater than 0", ErrPermanent)
+				}
+				chatReq.MaxTokens = req.Parameters.MaxTokens
+			}
+			if len(req.Parameters.Stop) > 0 {
+				chatReq.Stop = req.Parameters.Stop
+			}
 		}
 	}
 
@@ -219,7 +275,7 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 		return LLMResponse{}, fmt.Errorf("%w: failed to create openai http request: %v", ErrPermanent, err)
 	}
 
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+cleanKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.httpClient.Do(httpReq)
@@ -230,7 +286,8 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 		if errors.Is(reqCtx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return LLMResponse{}, context.DeadlineExceeded
 		}
-		return LLMResponse{}, NewTransientError("openai request failed due to connection error", ErrTransient)
+		safeErr := redactString(err.Error(), cleanKey)
+		return LLMResponse{}, NewTransientError(fmt.Sprintf("openai request failed due to connection error: %s", safeErr), ErrTransient)
 	}
 	defer resp.Body.Close()
 
@@ -239,11 +296,18 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 		return LLMResponse{}, NewTransientError("failed to read openai response body", ErrTransient)
 	}
 
+	contentType := resp.Header.Get("Content-Type")
 	var chatResp openAIChatResponse
-	_ = json.Unmarshal(respBytes, &chatResp)
+	unmarshalErr := json.Unmarshal(respBytes, &chatResp)
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		if !strings.Contains(strings.ToLower(contentType), "application/json") {
+			return LLMResponse{}, NewTransientError(fmt.Sprintf("unexpected content-type from openai: %q", contentType), ErrTransient)
+		}
+		if unmarshalErr != nil {
+			return LLMResponse{}, NewTransientError(fmt.Sprintf("failed to parse openai json response: %v", unmarshalErr), ErrTransient)
+		}
 		if len(chatResp.Choices) == 0 {
 			return LLMResponse{}, NewPermanentError("openai returned response with no choices", ErrPermanent)
 		}
@@ -268,7 +332,7 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 	case http.StatusBadRequest:
 		errMsg := "bad request"
 		if chatResp.Error != nil && chatResp.Error.Message != "" {
-			errMsg = sanitizeErrorMessage(chatResp.Error.Message)
+			errMsg = sanitizeErrorMessage(chatResp.Error.Message, cleanKey)
 		}
 		return LLMResponse{}, NewPermanentError(fmt.Sprintf("openai rejected request (HTTP 400): %s", errMsg), ErrPermanent)
 
@@ -280,10 +344,22 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, req LLMRequest) (LLMRespon
 	}
 }
 
-// sanitizeErrorMessage strips any accidental bearer token or credential strings from upstream error messages.
-func sanitizeErrorMessage(msg string) string {
-	if strings.Contains(msg, "sk-") {
+// sanitizeErrorMessage strips any sensitive credential strings from upstream error messages.
+func sanitizeErrorMessage(msg string, apiKey string) string {
+	cleaned := redactString(msg, apiKey)
+	if strings.Contains(cleaned, "sk-") {
 		return "openai request validation error"
 	}
-	return msg
+	return cleaned
+}
+
+var tokenPattern = regexp.MustCompile(`(sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]+)`)
+
+// redactString redacts known secrets and token patterns from messages.
+func redactString(str string, secret string) string {
+	if secret != "" {
+		str = strings.ReplaceAll(str, secret, "[REDACTED]")
+	}
+	str = tokenPattern.ReplaceAllString(str, "[REDACTED]")
+	return str
 }

@@ -534,3 +534,50 @@ func TestClient_UnavailableServerReportsError(t *testing.T) {
 		t.Fatalf("expected error when temporal server is offline, got nil")
 	}
 }
+
+func TestTemporal_CredentialsNeverInWorkflowInputsOrHistoryOrErrors(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	fakeSecret := "sk-fake-secret-never-expose-in-temporal-history-11111"
+
+	// Mock executor that fails with an error string containing a secret
+	mock := &agentruntime.MockExecutor{
+		Err: errors.New("upstream failure containing secret " + fakeSecret),
+	}
+	rt, _ := agentruntime.New(mock)
+	agentActivities := temporal.NewAgentActivities(rt)
+
+	env.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+	env.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	input := temporal.AgentExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionInput: map[string]any{
+			"prompt": "safe prompt text",
+		},
+	}
+
+	env.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatalf("expected workflow to complete (with error)")
+	}
+
+	wfErr := env.GetWorkflowError()
+	if wfErr == nil {
+		t.Fatalf("expected workflow error, got nil")
+	}
+
+	// Verify that the workflow application error does NOT leak the fake secret
+	errMsg := wfErr.Error()
+	if strings.Contains(errMsg, fakeSecret) {
+		t.Fatalf("CRITICAL SECURITY VIOLATION: Temporal workflow error leaked fake secret: %s", errMsg)
+	}
+}

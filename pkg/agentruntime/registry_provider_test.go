@@ -248,3 +248,62 @@ func TestRegistryConfigProvider_ErrorMappings(t *testing.T) {
 		}
 	})
 }
+
+func TestRegistryConfigProvider_PreservesLLMConfiguration(t *testing.T) {
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	params, _ := structpb.NewStruct(map[string]any{
+		"temperature": 0.4,
+		"max_tokens":  1024,
+	})
+
+	mockClient := &mockRegistryGRPCClient{
+		getAgentVersionFn: func(ctx context.Context, in *ardav1.GetAgentVersionRequest, opts ...grpc.CallOption) (*ardav1.GetAgentVersionResponse, error) {
+			return &ardav1.GetAgentVersionResponse{
+				Version: &ardav1.AgentVersion{
+					Id:            versionID.String(),
+					AgentId:       agentID.String(),
+					VersionNumber: 1,
+					Published:     true,
+					Configuration: &ardav1.AgentConfiguration{
+						PromptTemplate: "Execute: {{task}}",
+						LlmConfig: &ardav1.LLMConfiguration{
+							Provider:      "openai",
+							Model:         "gpt-4o",
+							CredentialRef: "secret:credentials/llm/openai#api_key",
+							Parameters:    params,
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	provider, err := agentruntime.NewRegistryConfigProvider(mockClient)
+	if err != nil {
+		t.Fatalf("unexpected error creating provider: %v", err)
+	}
+
+	cfg, err := provider.GetAgentConfig(context.Background(), tenantID, agentID, versionID)
+	if err != nil {
+		t.Fatalf("unexpected error retrieving config: %v", err)
+	}
+
+	if cfg.LLMConfig == nil {
+		t.Fatal("expected LLMConfig to be preserved, got nil")
+	}
+	if cfg.LLMConfig.Provider != "openai" {
+		t.Errorf("expected provider 'openai', got %q", cfg.LLMConfig.Provider)
+	}
+	if cfg.LLMConfig.Model != "gpt-4o" {
+		t.Errorf("expected model 'gpt-4o', got %q", cfg.LLMConfig.Model)
+	}
+	if cfg.LLMConfig.CredentialRef != "secret:credentials/llm/openai#api_key" {
+		t.Errorf("expected credential ref, got %q", cfg.LLMConfig.CredentialRef)
+	}
+	if cfg.LLMConfig.Parameters == nil || cfg.LLMConfig.Parameters["temperature"] != 0.4 {
+		t.Errorf("expected temperature 0.4 in parameters, got: %v", cfg.LLMConfig.Parameters)
+	}
+}

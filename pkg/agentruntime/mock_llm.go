@@ -7,11 +7,18 @@ import (
 // MockLLMClient provides deterministic LLM text generation for unit tests, local development,
 // and workflow increment testing without making real network requests or requiring provider credentials.
 type MockLLMClient struct {
-	Response     LLMResponse
-	Err          error
-	GenerateFunc func(ctx context.Context, request LLMRequest) (LLMResponse, error)
-	LastRequest  LLMRequest
-	Calls        int
+	Response       LLMResponse
+	Err            error
+	GenerateFunc   func(ctx context.Context, request LLMRequest) (LLMResponse, error)
+	LastRequest    LLMRequest
+	LastCredential string
+	Calls          int
+}
+
+// GenerateWithCredential fulfills ProviderAdapter, recording the passed credential.
+func (m *MockLLMClient) GenerateWithCredential(ctx context.Context, credential string, request LLMRequest) (LLMResponse, error) {
+	m.LastCredential = credential
+	return m.Generate(ctx, request)
 }
 
 // Generate returns the configured response or error, recording call metrics and respecting context cancellation.

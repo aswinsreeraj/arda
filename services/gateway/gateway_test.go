@@ -1394,6 +1394,10 @@ func (m *mockVaultSecretStore) DeleteSecret(ctx context.Context, tenantID uuid.U
 	return nil
 }
 
+func (m *mockVaultSecretStore) DestroySecret(ctx context.Context, tenantID uuid.UUID, key string) error {
+	return m.DeleteSecret(ctx, tenantID, key)
+}
+
 func createGRPCTestGateway(t *testing.T, regStore store.Store, vStore vault.SecretStore, credStore credentials.Store, tempDispatcher gatewayhttp.WorkflowDispatcher) (http.Handler, *auth.TokenValidator, func()) {
 	val, err := auth.NewTokenValidator(getTestConfig())
 	if err != nil {

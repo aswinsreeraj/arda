@@ -140,3 +140,8 @@ func (m *MemoryStore) DeleteSecret(ctx context.Context, tenantID uuid.UUID, key 
 	delete(m.secrets, sKey)
 	return nil
 }
+
+// DestroySecret permanently destroys a secret and all associated entries from memory.
+func (m *MemoryStore) DestroySecret(ctx context.Context, tenantID uuid.UUID, key string) error {
+	return m.DeleteSecret(ctx, tenantID, key)
+}
