@@ -137,4 +137,70 @@ func TestValidateConfiguration(t *testing.T) {
 			t.Fatalf("expected secret reference to pass, got: %v", err)
 		}
 	})
+
+	t.Run("valid output schema passes", func(t *testing.T) {
+		cfg := validBaseConfig
+		cfg.OutputSchema = &OutputSchema{
+			Name:        "SentimentAnalysis",
+			Description: "Analyzes sentiment of text",
+			Strict:      true,
+			Schema: map[string]any{
+				"type":     "object",
+				"required": []any{"sentiment", "confidence"},
+				"properties": map[string]any{
+					"sentiment":  map[string]any{"type": "string", "enum": []any{"positive", "negative", "neutral"}},
+					"confidence": map[string]any{"type": "number", "minimum": 0.0, "maximum": 1.0},
+				},
+				"additionalProperties": false,
+			},
+		}
+		if err := ValidateConfiguration(cfg); err != nil {
+			t.Fatalf("expected valid output schema to pass, got: %v", err)
+		}
+	})
+
+	t.Run("invalid output schema rejected", func(t *testing.T) {
+		// Empty schema
+		cfgEmpty := validBaseConfig
+		cfgEmpty.OutputSchema = &OutputSchema{
+			Schema: map[string]any{},
+		}
+		if err := ValidateConfiguration(cfgEmpty); err == nil {
+			t.Fatal("expected error for empty output schema, got nil")
+		}
+
+		// Unknown type
+		cfgType := validBaseConfig
+		cfgType.OutputSchema = &OutputSchema{
+			Schema: map[string]any{
+				"type": "nonexistent_type",
+			},
+		}
+		if err := ValidateConfiguration(cfgType); err == nil {
+			t.Fatal("expected error for unknown schema type, got nil")
+		}
+
+		// Remote $ref
+		cfgRemote := validBaseConfig
+		cfgRemote.OutputSchema = &OutputSchema{
+			Schema: map[string]any{
+				"$ref": "https://remote.example.com/schema.json",
+			},
+		}
+		if err := ValidateConfiguration(cfgRemote); err == nil {
+			t.Fatal("expected error for remote $ref in output schema, got nil")
+		}
+
+		// Invalid regex pattern
+		cfgRegex := validBaseConfig
+		cfgRegex.OutputSchema = &OutputSchema{
+			Schema: map[string]any{
+				"type":    "string",
+				"pattern": "(invalid[a-z",
+			},
+		}
+		if err := ValidateConfiguration(cfgRegex); err == nil {
+			t.Fatal("expected error for invalid regex pattern, got nil")
+		}
+	})
 }

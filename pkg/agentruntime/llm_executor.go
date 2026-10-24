@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aswinsreeraj/arda/pkg/jsonschema"
 	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 )
@@ -153,6 +154,32 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		}
 	}
 
+	// Validate structured output if schema configured
+	outputSchema := e.extractOutputSchema(cfg)
+	if outputSchema != nil {
+		compiledSchema, err := jsonschema.Compile(outputSchema.Schema)
+		if err != nil {
+			return ExecutionResult{}, NewPermanentError("invalid agent output schema configuration", fmt.Errorf("%w: %v", ErrInvalidOutputSchema, err))
+		}
+
+		parsedJSON, err := compiledSchema.ValidateJSON([]byte(resp.Content))
+		if err != nil {
+			if errors.Is(err, jsonschema.ErrOutputTooLarge) {
+				return ExecutionResult{}, NewPermanentError("model output exceeds size limit", ErrOutputTooLarge)
+			}
+			if errors.Is(err, jsonschema.ErrInvalidJSON) {
+				return ExecutionResult{}, NewPermanentError("model output is not valid JSON", ErrInvalidOutputJSON)
+			}
+			if errors.Is(err, jsonschema.ErrSchemaViolation) {
+				return ExecutionResult{}, NewPermanentError(fmt.Sprintf("model output violates schema: %v", err), ErrSchemaViolation)
+			}
+			return ExecutionResult{}, NewPermanentError("internal validation failure", fmt.Errorf("%w: %v", ErrInternalValidation, err))
+		}
+
+		result.StructuredOutput = parsedJSON
+		result.Output["structured_output"] = parsedJSON
+	}
+
 	if err := result.Validate(); err != nil {
 		return ExecutionResult{}, err
 	}
@@ -163,6 +190,44 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 // Run fulfills the AgentRuntime interface, allowing LLMExecutor to be used directly as an AgentRuntime.
 func (e *LLMExecutor) Run(ctx context.Context, input ExecutionInput) (ExecutionResult, error) {
 	return e.Execute(ctx, input)
+}
+
+func (e *LLMExecutor) extractOutputSchema(cfg domain.Configuration) *domain.OutputSchema {
+	if cfg.OutputSchema != nil && len(cfg.OutputSchema.Schema) > 0 {
+		return cfg.OutputSchema
+	}
+	if cfg.Guardrails != nil {
+		if osRaw, ok := cfg.Guardrails["output_schema"]; ok {
+			switch val := osRaw.(type) {
+			case *domain.OutputSchema:
+				if val != nil && len(val.Schema) > 0 {
+					return val
+				}
+			case domain.OutputSchema:
+				if len(val.Schema) > 0 {
+					return &val
+				}
+			case map[string]any:
+				if schemaMap, ok := val["schema"].(map[string]any); ok && len(schemaMap) > 0 {
+					name, _ := val["name"].(string)
+					desc, _ := val["description"].(string)
+					strict, _ := val["strict"].(bool)
+					return &domain.OutputSchema{
+						Name:        name,
+						Description: desc,
+						Strict:      strict,
+						Schema:      schemaMap,
+					}
+				}
+				if len(val) > 0 {
+					return &domain.OutputSchema{
+						Schema: val,
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (e *LLMExecutor) buildRequest(input ExecutionInput, cfg domain.Configuration, prompt string) LLMRequest {

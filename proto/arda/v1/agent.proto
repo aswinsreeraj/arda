@@ -48,6 +48,24 @@ message AgentConfiguration {
 
   // Explicit LLM provider, model, and BYOK credential configuration.
   LLMConfiguration llm_config = 7;
+
+  // Optional schema-validated structured-output contract (JSON Schema Draft-07).
+  OutputSchema output_schema = 8;
+}
+
+// OutputSchema defines an optional JSON Schema-based structured output contract.
+message OutputSchema {
+  // JSON Schema (Draft-07) defining the expected output structure.
+  google.protobuf.Struct schema = 1;
+
+  // Name identifying this schema contract.
+  string name = 2;
+
+  // Description of what the output represents.
+  string description = 3;
+
+  // Strict enforcement flag.
+  bool strict = 4;
 }
 
 // LLMConfiguration defines explicit provider, model, secret reference, and generation parameters.

@@ -80,6 +80,19 @@ func ProtoToDomainConfig(cfg *ardav1.AgentConfiguration) domain.Configuration {
 			Parameters:    params,
 		}
 	}
+	var outputSchema *domain.OutputSchema
+	if cfg.OutputSchema != nil {
+		var schemaMap map[string]any
+		if cfg.OutputSchema.Schema != nil {
+			schemaMap = cfg.OutputSchema.Schema.AsMap()
+		}
+		outputSchema = &domain.OutputSchema{
+			Name:        cfg.OutputSchema.Name,
+			Description: cfg.OutputSchema.Description,
+			Strict:      cfg.OutputSchema.Strict,
+			Schema:      schemaMap,
+		}
+	}
 	return domain.Configuration{
 		PromptTemplate:       cfg.PromptTemplate,
 		Tools:                cfg.Tools,
@@ -88,6 +101,7 @@ func ProtoToDomainConfig(cfg *ardav1.AgentConfiguration) domain.Configuration {
 		Guardrails:           guardrails,
 		Budgets:              budgets,
 		LLMConfig:            llmCfg,
+		OutputSchema:         outputSchema,
 	}
 }
 
@@ -126,6 +140,23 @@ func DomainConfigToProto(cfg domain.Configuration) (*ardav1.AgentConfiguration, 
 			Parameters:    params,
 		}
 	}
+	var protoOutputSchema *ardav1.OutputSchema
+	if cfg.OutputSchema != nil {
+		var schemaStruct *structpb.Struct
+		if cfg.OutputSchema.Schema != nil {
+			var err error
+			schemaStruct, err = structpb.NewStruct(cfg.OutputSchema.Schema)
+			if err != nil {
+				return nil, err
+			}
+		}
+		protoOutputSchema = &ardav1.OutputSchema{
+			Name:        cfg.OutputSchema.Name,
+			Description: cfg.OutputSchema.Description,
+			Strict:      cfg.OutputSchema.Strict,
+			Schema:      schemaStruct,
+		}
+	}
 	tools := cfg.Tools
 	if tools == nil {
 		tools = []string{}
@@ -138,6 +169,7 @@ func DomainConfigToProto(cfg domain.Configuration) (*ardav1.AgentConfiguration, 
 		Guardrails:           guardrails,
 		Budgets:              budgets,
 		LlmConfig:            protoLLM,
+		OutputSchema:         protoOutputSchema,
 	}, nil
 }
 

@@ -57,10 +57,11 @@ type AgentExecutionActivityInput struct {
 
 // AgentExecutionActivityResult represents the activity outcome returned to the workflow.
 type AgentExecutionActivityResult struct {
-	Status     string                       `json:"status"`
-	Output     map[string]any               `json:"output,omitempty"`
-	Reason     string                       `json:"reason,omitempty"`
-	Escalation *agentruntime.EscalationInfo `json:"escalation,omitempty"`
+	Status           string                       `json:"status"`
+	Output           map[string]any               `json:"output,omitempty"`
+	StructuredOutput any                          `json:"structured_output,omitempty"`
+	Reason           string                       `json:"reason,omitempty"`
+	Escalation       *agentruntime.EscalationInfo `json:"escalation,omitempty"`
 }
 
 // AgentActivities encapsulates activities that invoke an injected AgentRuntime.
@@ -204,9 +205,10 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 	)
 
 	return AgentExecutionActivityResult{
-		Status:     string(res.Status),
-		Output:     res.Output,
-		Reason:     res.Reason,
-		Escalation: res.Escalation,
+		Status:           string(res.Status),
+		Output:           res.Output,
+		StructuredOutput: res.StructuredOutput,
+		Reason:           res.Reason,
+		Escalation:       res.Escalation,
 	}, nil
 }

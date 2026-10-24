@@ -581,3 +581,146 @@ func TestTemporal_CredentialsNeverInWorkflowInputsOrHistoryOrErrors(t *testing.T
 		t.Fatalf("CRITICAL SECURITY VIOLATION: Temporal workflow error leaked fake secret: %s", errMsg)
 	}
 }
+
+func TestTemporal_StructuredOutput_Propagation(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	expectedStructured := map[string]any{
+		"rating":   5.0,
+		"approved": true,
+	}
+
+	mock := &agentruntime.MockExecutor{
+		Result: agentruntime.ExecutionResult{
+			Status: agentruntime.StatusSuccess,
+			Output: map[string]any{
+				"content":           `{"rating": 5, "approved": true}`,
+				"structured_output": expectedStructured,
+			},
+			StructuredOutput: expectedStructured,
+		},
+	}
+	rt, _ := agentruntime.New(mock)
+	agentActivities := temporal.NewAgentActivities(rt)
+
+	env.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+	env.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	input := temporal.AgentExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionInput: map[string]any{"text": "evaluate"},
+	}
+
+	env.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+	if !env.IsWorkflowCompleted() {
+		t.Fatalf("expected workflow to complete")
+	}
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("unexpected workflow error: %v", err)
+	}
+
+	var result temporal.AgentExecutionResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("failed to decode workflow result: %v", err)
+	}
+
+	if result.StructuredOutput == nil {
+		t.Fatal("expected non-nil StructuredOutput on AgentExecutionResult")
+	}
+	soMap, ok := result.StructuredOutput.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got: %T", result.StructuredOutput)
+	}
+	if soMap["approved"] != true {
+		t.Errorf("got approved %v, want true", soMap["approved"])
+	}
+}
+
+func TestTemporal_StructuredOutput_InvalidOutputNonRetryable(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+
+	// 1. Verify Activity execution returns non-retryable PermanentExecutionError
+	t.Run("activity error classification", func(t *testing.T) {
+		actEnv := suite.NewTestActivityEnvironment()
+		mock := &agentruntime.MockExecutor{
+			Err: agentruntime.NewPermanentError("model output violates schema", agentruntime.ErrSchemaViolation),
+		}
+		rt, _ := agentruntime.New(mock)
+		agentActivities := temporal.NewAgentActivities(rt)
+		actEnv.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+		tenantID := uuid.New()
+		agentID := uuid.New()
+		versionID := uuid.New()
+
+		input := temporal.AgentExecutionActivityInput{
+			TenantID:       tenantID,
+			AgentID:        agentID,
+			AgentVersionID: versionID,
+		}
+
+		_, err := actEnv.ExecuteActivity(agentActivities.AgentExecutionActivity, input)
+		if err == nil {
+			t.Fatalf("expected error from activity, got nil")
+		}
+
+		var appErr *sdktemporal.ApplicationError
+		if !errors.As(err, &appErr) {
+			t.Fatalf("expected ApplicationError, got: %T (%v)", err, err)
+		}
+		if appErr.Type() != "PermanentExecutionError" {
+			t.Errorf("expected error type PermanentExecutionError, got: %s", appErr.Type())
+		}
+		if !appErr.NonRetryable() {
+			t.Errorf("expected PermanentExecutionError to be non-retryable")
+		}
+	})
+
+	// 2. Verify Workflow terminates on non-retryable error without infinite retries
+	t.Run("workflow termination", func(t *testing.T) {
+		wfEnv := suite.NewTestWorkflowEnvironment()
+		mock := &agentruntime.MockExecutor{
+			Err: agentruntime.NewPermanentError("model output violates schema", agentruntime.ErrSchemaViolation),
+		}
+		rt, _ := agentruntime.New(mock)
+		agentActivities := temporal.NewAgentActivities(rt)
+
+		wfEnv.RegisterWorkflow(temporal.AgentExecutionWorkflow)
+		wfEnv.RegisterActivity(agentActivities.AgentExecutionActivity)
+
+		tenantID := uuid.New()
+		agentID := uuid.New()
+		versionID := uuid.New()
+
+		input := temporal.AgentExecutionInput{
+			TenantID:       tenantID,
+			AgentID:        agentID,
+			AgentVersionID: versionID,
+		}
+
+		wfEnv.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
+
+		if !wfEnv.IsWorkflowCompleted() {
+			t.Fatalf("expected workflow to complete (with error)")
+		}
+
+		wfErr := wfEnv.GetWorkflowError()
+		if wfErr == nil {
+			t.Fatalf("expected workflow error on schema violation, got nil")
+		}
+
+		// Verify error message reflects permanent execution failure
+		if !strings.Contains(wfErr.Error(), "PermanentExecutionError") && !strings.Contains(wfErr.Error(), "permanent runtime execution failure") {
+			t.Errorf("expected workflow error to indicate PermanentExecutionError, got: %v", wfErr)
+		}
+	})
+}

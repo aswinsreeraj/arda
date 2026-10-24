@@ -86,15 +86,16 @@ type AgentExecutionInput struct {
 
 // AgentExecutionResult represents the output of AgentExecutionWorkflow.
 type AgentExecutionResult struct {
-	WorkflowID     string                       `json:"workflow_id"`
-	RunID          string                       `json:"run_id"`
-	TenantID       uuid.UUID                    `json:"tenant_id"`
-	AgentID        uuid.UUID                    `json:"agent_id"`
-	AgentVersionID uuid.UUID                    `json:"agent_version_id"`
-	Status         string                       `json:"status"`
-	Output         map[string]any               `json:"output,omitempty"`
-	Reason         string                       `json:"reason,omitempty"`
-	Escalation     *agentruntime.EscalationInfo `json:"escalation,omitempty"`
+	WorkflowID       string                       `json:"workflow_id"`
+	RunID            string                       `json:"run_id"`
+	TenantID         uuid.UUID                    `json:"tenant_id"`
+	AgentID          uuid.UUID                    `json:"agent_id"`
+	AgentVersionID   uuid.UUID                    `json:"agent_version_id"`
+	Status           string                       `json:"status"`
+	Output           map[string]any               `json:"output,omitempty"`
+	StructuredOutput any                          `json:"structured_output,omitempty"`
+	Reason           string                       `json:"reason,omitempty"`
+	Escalation       *agentruntime.EscalationInfo `json:"escalation,omitempty"`
 }
 
 // AgentExecutionWorkflow orchestrates the execution of an agent via AgentExecutionActivity.
@@ -150,14 +151,15 @@ func AgentExecutionWorkflow(ctx workflow.Context, input AgentExecutionInput) (Ag
 	)
 
 	return AgentExecutionResult{
-		WorkflowID:     info.WorkflowExecution.ID,
-		RunID:          info.WorkflowExecution.RunID,
-		TenantID:       input.TenantID,
-		AgentID:        input.AgentID,
-		AgentVersionID: input.AgentVersionID,
-		Status:         actResult.Status,
-		Output:         actResult.Output,
-		Reason:         actResult.Reason,
-		Escalation:     actResult.Escalation,
+		WorkflowID:       info.WorkflowExecution.ID,
+		RunID:            info.WorkflowExecution.RunID,
+		TenantID:         input.TenantID,
+		AgentID:          input.AgentID,
+		AgentVersionID:   input.AgentVersionID,
+		Status:           actResult.Status,
+		Output:           actResult.Output,
+		StructuredOutput: actResult.StructuredOutput,
+		Reason:           actResult.Reason,
+		Escalation:       actResult.Escalation,
 	}, nil
 }

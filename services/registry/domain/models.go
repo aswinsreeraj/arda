@@ -36,6 +36,14 @@ type LLMConfig struct {
 	Parameters    map[string]any `json:"parameters,omitempty"`
 }
 
+// OutputSchema defines a JSON Schema-based structured output contract for an agent.
+type OutputSchema struct {
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Strict      bool           `json:"strict,omitempty"`
+	Schema      map[string]any `json:"schema"`
+}
+
 // Configuration represents the versioned configuration of an agent.
 type Configuration struct {
 	PromptTemplate       string         `json:"prompt_template"`
@@ -45,6 +53,7 @@ type Configuration struct {
 	Guardrails           map[string]any `json:"guardrails,omitempty"`
 	Budgets              map[string]any `json:"budgets,omitempty"`
 	LLMConfig            *LLMConfig     `json:"llm_config,omitempty"`
+	OutputSchema         *OutputSchema  `json:"output_schema,omitempty"`
 }
 
 // Value implements driver.Valuer for database JSONB serialization.

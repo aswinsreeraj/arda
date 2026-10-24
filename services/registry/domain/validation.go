@@ -3,6 +3,8 @@ package domain
 import (
 	"fmt"
 	"strings"
+
+	"github.com/aswinsreeraj/arda/pkg/jsonschema"
 )
 
 // ValidateAgentName validates an agent's display name.
@@ -47,6 +49,13 @@ func ValidateConfiguration(cfg Configuration) error {
 	// Validate LLMConfig if specified
 	if cfg.LLMConfig != nil {
 		if err := validateLLMConfig(*cfg.LLMConfig); err != nil {
+			details = append(details, err.Error())
+		}
+	}
+
+	// Validate OutputSchema if specified
+	if cfg.OutputSchema != nil {
+		if err := validateOutputSchema(*cfg.OutputSchema); err != nil {
 			details = append(details, err.Error())
 		}
 	}
@@ -143,5 +152,24 @@ func checkForPlaintextCredentials(cfg Configuration) error {
 		}
 	}
 
+	return nil
+}
+
+// validateOutputSchema verifies that the structured output schema is valid JSON Schema Draft-07,
+// bounded in complexity, does not contain remote references, and satisfies identifier length limits.
+func validateOutputSchema(os OutputSchema) error {
+	if len(os.Schema) == 0 {
+		return fmt.Errorf("output_schema.schema is required and cannot be empty")
+	}
+	if len(os.Name) > 100 {
+		return fmt.Errorf("output_schema.name exceeds maximum length of 100 characters")
+	}
+	if len(os.Description) > 500 {
+		return fmt.Errorf("output_schema.description exceeds maximum length of 500 characters")
+	}
+	// Compile using jsonschema engine to validate Draft-07 syntax, bounded complexity, and reject remote references
+	if _, err := jsonschema.Compile(os.Schema); err != nil {
+		return fmt.Errorf("invalid output_schema: %w", err)
+	}
 	return nil
 }

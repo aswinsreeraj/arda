@@ -733,3 +733,371 @@ func TestLLMExecutor_LegacyGuardrailsCompatibility(t *testing.T) {
 		t.Errorf("expected credential ref 'secret:legacy/key#api_key', got %q", mockLLM.LastRequest.CredentialRef)
 	}
 }
+
+func TestLLMExecutor_StructuredOutput_Success(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	mockConfig := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	cfg := validConfiguration("Analyze sentiment for {{input.text}}")
+	cfg.OutputSchema = &domain.OutputSchema{
+		Name:        "SentimentAnalysis",
+		Description: "Analyzes text sentiment",
+		Strict:      true,
+		Schema: map[string]any{
+			"type":     "object",
+			"required": []any{"sentiment", "confidence"},
+			"properties": map[string]any{
+				"sentiment":  map[string]any{"type": "string", "enum": []any{"positive", "negative", "neutral"}},
+				"confidence": map[string]any{"type": "number", "minimum": 0.0, "maximum": 1.0},
+			},
+			"additionalProperties": false,
+		},
+	}
+	mockConfig.SetConfig(tenantID, agentID, versionID, cfg)
+
+	exec, err := agentruntime.NewLLMExecutor(mockLLM, mockConfig)
+	if err != nil {
+		t.Fatalf("unexpected NewLLMExecutor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		Payload: map[string]any{
+			"text": "Great service, highly recommended!",
+		},
+	}
+
+	mockLLM.Response = agentruntime.LLMResponse{
+		Content: `{"sentiment": "positive", "confidence": 0.98}`,
+		Model:   "mock-gpt",
+	}
+
+	res, err := exec.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected successful execution, got error: %v", err)
+	}
+
+	if res.StructuredOutput == nil {
+		t.Fatal("expected non-nil StructuredOutput")
+	}
+	soMap, ok := res.StructuredOutput.(map[string]any)
+	if !ok {
+		t.Fatalf("expected StructuredOutput to be map[string]any, got %T", res.StructuredOutput)
+	}
+	if soMap["sentiment"] != "positive" {
+		t.Errorf("got sentiment %v, want 'positive'", soMap["sentiment"])
+	}
+
+	if res.Output["structured_output"] == nil {
+		t.Fatal("expected Output['structured_output'] to be populated")
+	}
+	if res.Output["content"] != `{"sentiment": "positive", "confidence": 0.98}` {
+		t.Errorf("expected raw completion preserved in Output['content'], got: %v", res.Output["content"])
+	}
+	if res.Output["response"] != `{"sentiment": "positive", "confidence": 0.98}` {
+		t.Errorf("expected raw completion preserved in Output['response'], got: %v", res.Output["response"])
+	}
+}
+
+func TestLLMExecutor_StructuredOutput_Violations(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	mockConfig := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	cfg := validConfiguration("Analyze sentiment for {{input.text}}")
+	cfg.OutputSchema = &domain.OutputSchema{
+		Name:   "SentimentAnalysis",
+		Strict: true,
+		Schema: map[string]any{
+			"type":     "object",
+			"required": []any{"sentiment", "confidence"},
+			"properties": map[string]any{
+				"sentiment":  map[string]any{"type": "string", "enum": []any{"positive", "negative", "neutral"}},
+				"confidence": map[string]any{"type": "number", "minimum": 0.0, "maximum": 1.0},
+			},
+			"additionalProperties": false,
+		},
+	}
+	mockConfig.SetConfig(tenantID, agentID, versionID, cfg)
+
+	exec, err := agentruntime.NewLLMExecutor(mockLLM, mockConfig)
+	if err != nil {
+		t.Fatalf("unexpected NewLLMExecutor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		Payload: map[string]any{
+			"text": "test",
+		},
+	}
+
+	tests := []struct {
+		name          string
+		modelResponse string
+		expectedErr   error
+	}{
+		{
+			name:          "missing required field",
+			modelResponse: `{"sentiment": "positive"}`,
+			expectedErr:   agentruntime.ErrSchemaViolation,
+		},
+		{
+			name:          "incorrect field type",
+			modelResponse: `{"sentiment": "positive", "confidence": "high"}`,
+			expectedErr:   agentruntime.ErrSchemaViolation,
+		},
+		{
+			name:          "prohibited additional property",
+			modelResponse: `{"sentiment": "positive", "confidence": 0.9, "extra": "boom"}`,
+			expectedErr:   agentruntime.ErrSchemaViolation,
+		},
+		{
+			name:          "malformed JSON syntax",
+			modelResponse: `{"sentiment": "positive", "confidence":`,
+			expectedErr:   agentruntime.ErrInvalidOutputJSON,
+		},
+		{
+			name:          "empty model output",
+			modelResponse: ``,
+			expectedErr:   agentruntime.ErrInvalidOutputJSON,
+		},
+		{
+			name:          "code fences not silently stripped",
+			modelResponse: "```json\n{\"sentiment\": \"positive\", \"confidence\": 0.95}\n```",
+			expectedErr:   agentruntime.ErrInvalidOutputJSON,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockLLM.Response = agentruntime.LLMResponse{
+				Content: tc.modelResponse,
+				Model:   "mock-gpt",
+			}
+
+			_, err := exec.Execute(context.Background(), input)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+			if !errors.Is(err, tc.expectedErr) {
+				t.Fatalf("expected %v, got %v", tc.expectedErr, err)
+			}
+			// Verify non-retryable permanent classification
+			cat := agentruntime.ClassifyError(err)
+			if cat != agentruntime.CategoryPermanent {
+				t.Errorf("expected CategoryPermanent error, got %v", cat)
+			}
+		})
+	}
+}
+
+func TestLLMExecutor_StructuredOutput_ExceedsSizeLimit(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	mockConfig := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	cfg := validConfiguration("Test prompt")
+	cfg.OutputSchema = &domain.OutputSchema{
+		Schema: map[string]any{"type": "object"},
+	}
+	mockConfig.SetConfig(tenantID, agentID, versionID, cfg)
+
+	exec, err := agentruntime.NewLLMExecutor(mockLLM, mockConfig)
+	if err != nil {
+		t.Fatalf("unexpected NewLLMExecutor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+	}
+
+	// 1MB + 10 bytes
+	hugeOutput := make([]byte, 1024*1024+10)
+	for i := range hugeOutput {
+		hugeOutput[i] = ' '
+	}
+	copy(hugeOutput, []byte(`{"key": "value"}`))
+
+	mockLLM.Response = agentruntime.LLMResponse{
+		Content: string(hugeOutput),
+		Model:   "mock-gpt",
+	}
+
+	_, err = exec.Execute(context.Background(), input)
+	if !errors.Is(err, agentruntime.ErrOutputTooLarge) {
+		t.Fatalf("expected ErrOutputTooLarge, got: %v", err)
+	}
+	if cat := agentruntime.ClassifyError(err); cat != agentruntime.CategoryPermanent {
+		t.Errorf("expected CategoryPermanent for oversized output, got: %v", cat)
+	}
+}
+
+func TestLLMExecutor_StructuredOutput_BackwardCompatibility(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	mockConfig := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	// Agent WITHOUT OutputSchema
+	cfg := validConfiguration("Plain text prompt")
+	mockConfig.SetConfig(tenantID, agentID, versionID, cfg)
+
+	exec, err := agentruntime.NewLLMExecutor(mockLLM, mockConfig)
+	if err != nil {
+		t.Fatalf("unexpected NewLLMExecutor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+	}
+
+	mockLLM.Response = agentruntime.LLMResponse{
+		Content: "This is arbitrary raw non-JSON text completion from LLM.",
+		Model:   "mock-gpt",
+	}
+
+	res, err := exec.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unconfigured agent should succeed with arbitrary text: %v", err)
+	}
+
+	if res.StructuredOutput != nil {
+		t.Errorf("expected nil StructuredOutput for unconfigured agent, got: %v", res.StructuredOutput)
+	}
+	if res.Output["content"] != "This is arbitrary raw non-JSON text completion from LLM." {
+		t.Errorf("unexpected content: %v", res.Output["content"])
+	}
+}
+
+func TestLLMExecutor_StructuredOutput_ProviderFailureDistinct(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	mockConfig := agentruntime.NewMockConfigProvider()
+
+	tenantID := uuid.New()
+	agentID := uuid.New()
+	versionID := uuid.New()
+
+	cfg := validConfiguration("Prompt")
+	cfg.OutputSchema = &domain.OutputSchema{
+		Schema: map[string]any{"type": "object"},
+	}
+	mockConfig.SetConfig(tenantID, agentID, versionID, cfg)
+
+	exec, err := agentruntime.NewLLMExecutor(mockLLM, mockConfig)
+	if err != nil {
+		t.Fatalf("unexpected NewLLMExecutor error: %v", err)
+	}
+
+	input := agentruntime.ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+	}
+
+	// Provider returns transient 429 rate limit error
+	mockLLM.Err = agentruntime.NewTransientError("rate limit exceeded", errors.New("HTTP 429"))
+
+	_, err = exec.Execute(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected provider error, got nil")
+	}
+
+	cat := agentruntime.ClassifyError(err)
+	if cat != agentruntime.CategoryTransient {
+		t.Errorf("expected provider failure to be classified as CategoryTransient, got: %v", cat)
+	}
+}
+
+func TestLLMExecutor_StructuredOutput_TenantAndVersionIsolation(t *testing.T) {
+	mockLLM := agentruntime.NewMockLLMClient()
+	mockConfig := agentruntime.NewMockConfigProvider()
+
+	tenant1 := uuid.New()
+	tenant2 := uuid.New()
+	agentID := uuid.New()
+	v1 := uuid.New()
+	v2 := uuid.New()
+
+	// v1 has no schema
+	cfg1 := validConfiguration("Prompt v1")
+	mockConfig.SetConfig(tenant1, agentID, v1, cfg1)
+
+	// v2 has schema requiring "code": integer
+	cfg2 := validConfiguration("Prompt v2")
+	cfg2.OutputSchema = &domain.OutputSchema{
+		Schema: map[string]any{
+			"type":     "object",
+			"required": []any{"code"},
+			"properties": map[string]any{
+				"code": map[string]any{"type": "integer"},
+			},
+		},
+	}
+	mockConfig.SetConfig(tenant1, agentID, v2, cfg2)
+
+	exec, err := agentruntime.NewLLMExecutor(mockLLM, mockConfig)
+	if err != nil {
+		t.Fatalf("unexpected NewLLMExecutor error: %v", err)
+	}
+
+	mockLLM.Response = agentruntime.LLMResponse{
+		Content: "plain text completion",
+	}
+
+	// Executing v1 succeeds (unconfigured)
+	input1 := agentruntime.ExecutionInput{
+		TenantID:       tenant1,
+		AgentID:        agentID,
+		AgentVersionID: v1,
+	}
+	res1, err := exec.Execute(context.Background(), input1)
+	if err != nil {
+		t.Fatalf("v1 execution failed: %v", err)
+	}
+	if res1.StructuredOutput != nil {
+		t.Error("v1 should not have structured output")
+	}
+
+	// Executing v2 fails validation because "plain text completion" is not JSON and lacks "code"
+	input2 := agentruntime.ExecutionInput{
+		TenantID:       tenant1,
+		AgentID:        agentID,
+		AgentVersionID: v2,
+	}
+	_, err = exec.Execute(context.Background(), input2)
+	if !errors.Is(err, agentruntime.ErrInvalidOutputJSON) {
+		t.Fatalf("v2 execution should fail with ErrInvalidOutputJSON, got: %v", err)
+	}
+
+	// Executing with tenant2 for tenant1's agent fails with ConfigurationNotFound
+	inputTenant2 := agentruntime.ExecutionInput{
+		TenantID:       tenant2,
+		AgentID:        agentID,
+		AgentVersionID: v2,
+	}
+	_, err = exec.Execute(context.Background(), inputTenant2)
+	if !errors.Is(err, agentruntime.ErrConfigurationNotFound) {
+		t.Fatalf("cross-tenant execution should fail with ErrConfigurationNotFound, got: %v", err)
+	}
+}

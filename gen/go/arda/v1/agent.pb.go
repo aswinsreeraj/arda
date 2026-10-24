@@ -105,7 +105,9 @@ type AgentConfiguration struct {
 	// Stored as JSONB in PostgreSQL.
 	Budgets *structpb.Struct `protobuf:"bytes,6,opt,name=budgets,proto3" json:"budgets,omitempty"`
 	// Explicit LLM provider, model, and BYOK credential configuration.
-	LlmConfig     *LLMConfiguration `protobuf:"bytes,7,opt,name=llm_config,json=llmConfig,proto3" json:"llm_config,omitempty"`
+	LlmConfig *LLMConfiguration `protobuf:"bytes,7,opt,name=llm_config,json=llmConfig,proto3" json:"llm_config,omitempty"`
+	// Optional schema-validated structured-output contract (JSON Schema Draft-07).
+	OutputSchema  *OutputSchema `protobuf:"bytes,8,opt,name=output_schema,json=outputSchema,proto3" json:"output_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -189,6 +191,86 @@ func (x *AgentConfiguration) GetLlmConfig() *LLMConfiguration {
 	return nil
 }
 
+func (x *AgentConfiguration) GetOutputSchema() *OutputSchema {
+	if x != nil {
+		return x.OutputSchema
+	}
+	return nil
+}
+
+// OutputSchema defines an optional JSON Schema-based structured output contract.
+type OutputSchema struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// JSON Schema (Draft-07) defining the expected output structure.
+	Schema *structpb.Struct `protobuf:"bytes,1,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Name identifying this schema contract.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Description of what the output represents.
+	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// Strict enforcement flag.
+	Strict        bool `protobuf:"varint,4,opt,name=strict,proto3" json:"strict,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OutputSchema) Reset() {
+	*x = OutputSchema{}
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OutputSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OutputSchema) ProtoMessage() {}
+
+func (x *OutputSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OutputSchema.ProtoReflect.Descriptor instead.
+func (*OutputSchema) Descriptor() ([]byte, []int) {
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *OutputSchema) GetSchema() *structpb.Struct {
+	if x != nil {
+		return x.Schema
+	}
+	return nil
+}
+
+func (x *OutputSchema) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *OutputSchema) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *OutputSchema) GetStrict() bool {
+	if x != nil {
+		return x.Strict
+	}
+	return false
+}
+
 // LLMConfiguration defines explicit provider, model, secret reference, and generation parameters.
 // Raw API keys or secrets must never be placed in this message; use secret references (e.g. "secret:...").
 type LLMConfiguration struct {
@@ -207,7 +289,7 @@ type LLMConfiguration struct {
 
 func (x *LLMConfiguration) Reset() {
 	*x = LLMConfiguration{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[1]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -219,7 +301,7 @@ func (x *LLMConfiguration) String() string {
 func (*LLMConfiguration) ProtoMessage() {}
 
 func (x *LLMConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[1]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -232,7 +314,7 @@ func (x *LLMConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LLMConfiguration.ProtoReflect.Descriptor instead.
 func (*LLMConfiguration) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{1}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *LLMConfiguration) GetProvider() string {
@@ -283,7 +365,7 @@ type Agent struct {
 
 func (x *Agent) Reset() {
 	*x = Agent{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[2]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -295,7 +377,7 @@ func (x *Agent) String() string {
 func (*Agent) ProtoMessage() {}
 
 func (x *Agent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[2]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -308,7 +390,7 @@ func (x *Agent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Agent.ProtoReflect.Descriptor instead.
 func (*Agent) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{2}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Agent) GetId() string {
@@ -376,7 +458,7 @@ type AgentVersion struct {
 
 func (x *AgentVersion) Reset() {
 	*x = AgentVersion{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[3]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -388,7 +470,7 @@ func (x *AgentVersion) String() string {
 func (*AgentVersion) ProtoMessage() {}
 
 func (x *AgentVersion) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[3]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -401,7 +483,7 @@ func (x *AgentVersion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentVersion.ProtoReflect.Descriptor instead.
 func (*AgentVersion) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{3}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AgentVersion) GetId() string {
@@ -475,7 +557,7 @@ type AgentDetail struct {
 
 func (x *AgentDetail) Reset() {
 	*x = AgentDetail{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[4]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -487,7 +569,7 @@ func (x *AgentDetail) String() string {
 func (*AgentDetail) ProtoMessage() {}
 
 func (x *AgentDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[4]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -500,7 +582,7 @@ func (x *AgentDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentDetail.ProtoReflect.Descriptor instead.
 func (*AgentDetail) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{4}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AgentDetail) GetAgent() *Agent {
@@ -538,7 +620,7 @@ type CreateAgentRequest struct {
 
 func (x *CreateAgentRequest) Reset() {
 	*x = CreateAgentRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[5]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +632,7 @@ func (x *CreateAgentRequest) String() string {
 func (*CreateAgentRequest) ProtoMessage() {}
 
 func (x *CreateAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[5]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +645,7 @@ func (x *CreateAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAgentRequest.ProtoReflect.Descriptor instead.
 func (*CreateAgentRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{5}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CreateAgentRequest) GetTenantId() string {
@@ -596,7 +678,7 @@ type CreateAgentResponse struct {
 
 func (x *CreateAgentResponse) Reset() {
 	*x = CreateAgentResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[6]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -608,7 +690,7 @@ func (x *CreateAgentResponse) String() string {
 func (*CreateAgentResponse) ProtoMessage() {}
 
 func (x *CreateAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[6]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -621,7 +703,7 @@ func (x *CreateAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAgentResponse.ProtoReflect.Descriptor instead.
 func (*CreateAgentResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{6}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CreateAgentResponse) GetAgent() *AgentDetail {
@@ -643,7 +725,7 @@ type GetAgentRequest struct {
 
 func (x *GetAgentRequest) Reset() {
 	*x = GetAgentRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[7]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -655,7 +737,7 @@ func (x *GetAgentRequest) String() string {
 func (*GetAgentRequest) ProtoMessage() {}
 
 func (x *GetAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[7]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -668,7 +750,7 @@ func (x *GetAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{7}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetAgentRequest) GetTenantId() string {
@@ -694,7 +776,7 @@ type GetAgentResponse struct {
 
 func (x *GetAgentResponse) Reset() {
 	*x = GetAgentResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[8]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -706,7 +788,7 @@ func (x *GetAgentResponse) String() string {
 func (*GetAgentResponse) ProtoMessage() {}
 
 func (x *GetAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[8]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -719,7 +801,7 @@ func (x *GetAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentResponse.ProtoReflect.Descriptor instead.
 func (*GetAgentResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetAgentResponse) GetAgent() *AgentDetail {
@@ -741,7 +823,7 @@ type ListAgentsRequest struct {
 
 func (x *ListAgentsRequest) Reset() {
 	*x = ListAgentsRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[9]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +835,7 @@ func (x *ListAgentsRequest) String() string {
 func (*ListAgentsRequest) ProtoMessage() {}
 
 func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[9]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +848,7 @@ func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentsRequest.ProtoReflect.Descriptor instead.
 func (*ListAgentsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{9}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListAgentsRequest) GetTenantId() string {
@@ -795,7 +877,7 @@ type ListAgentsResponse struct {
 
 func (x *ListAgentsResponse) Reset() {
 	*x = ListAgentsResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[10]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -807,7 +889,7 @@ func (x *ListAgentsResponse) String() string {
 func (*ListAgentsResponse) ProtoMessage() {}
 
 func (x *ListAgentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[10]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -820,7 +902,7 @@ func (x *ListAgentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentsResponse.ProtoReflect.Descriptor instead.
 func (*ListAgentsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ListAgentsResponse) GetAgents() []*AgentDetail {
@@ -851,7 +933,7 @@ type CreateAgentVersionRequest struct {
 
 func (x *CreateAgentVersionRequest) Reset() {
 	*x = CreateAgentVersionRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[11]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -863,7 +945,7 @@ func (x *CreateAgentVersionRequest) String() string {
 func (*CreateAgentVersionRequest) ProtoMessage() {}
 
 func (x *CreateAgentVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[11]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -876,7 +958,7 @@ func (x *CreateAgentVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAgentVersionRequest.ProtoReflect.Descriptor instead.
 func (*CreateAgentVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CreateAgentVersionRequest) GetTenantId() string {
@@ -909,7 +991,7 @@ type CreateAgentVersionResponse struct {
 
 func (x *CreateAgentVersionResponse) Reset() {
 	*x = CreateAgentVersionResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[12]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -921,7 +1003,7 @@ func (x *CreateAgentVersionResponse) String() string {
 func (*CreateAgentVersionResponse) ProtoMessage() {}
 
 func (x *CreateAgentVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[12]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -934,7 +1016,7 @@ func (x *CreateAgentVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAgentVersionResponse.ProtoReflect.Descriptor instead.
 func (*CreateAgentVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CreateAgentVersionResponse) GetVersion() *AgentVersion {
@@ -958,7 +1040,7 @@ type GetAgentVersionRequest struct {
 
 func (x *GetAgentVersionRequest) Reset() {
 	*x = GetAgentVersionRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[13]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +1052,7 @@ func (x *GetAgentVersionRequest) String() string {
 func (*GetAgentVersionRequest) ProtoMessage() {}
 
 func (x *GetAgentVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[13]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -983,7 +1065,7 @@ func (x *GetAgentVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentVersionRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetAgentVersionRequest) GetTenantId() string {
@@ -1016,7 +1098,7 @@ type GetAgentVersionResponse struct {
 
 func (x *GetAgentVersionResponse) Reset() {
 	*x = GetAgentVersionResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[14]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1028,7 +1110,7 @@ func (x *GetAgentVersionResponse) String() string {
 func (*GetAgentVersionResponse) ProtoMessage() {}
 
 func (x *GetAgentVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[14]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1041,7 +1123,7 @@ func (x *GetAgentVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentVersionResponse.ProtoReflect.Descriptor instead.
 func (*GetAgentVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{14}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetAgentVersionResponse) GetVersion() *AgentVersion {
@@ -1063,7 +1145,7 @@ type GetLatestPublishedVersionRequest struct {
 
 func (x *GetLatestPublishedVersionRequest) Reset() {
 	*x = GetLatestPublishedVersionRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[15]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1075,7 +1157,7 @@ func (x *GetLatestPublishedVersionRequest) String() string {
 func (*GetLatestPublishedVersionRequest) ProtoMessage() {}
 
 func (x *GetLatestPublishedVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[15]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1088,7 +1170,7 @@ func (x *GetLatestPublishedVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLatestPublishedVersionRequest.ProtoReflect.Descriptor instead.
 func (*GetLatestPublishedVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetLatestPublishedVersionRequest) GetTenantId() string {
@@ -1114,7 +1196,7 @@ type GetLatestPublishedVersionResponse struct {
 
 func (x *GetLatestPublishedVersionResponse) Reset() {
 	*x = GetLatestPublishedVersionResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[16]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1126,7 +1208,7 @@ func (x *GetLatestPublishedVersionResponse) String() string {
 func (*GetLatestPublishedVersionResponse) ProtoMessage() {}
 
 func (x *GetLatestPublishedVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[16]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1139,7 +1221,7 @@ func (x *GetLatestPublishedVersionResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use GetLatestPublishedVersionResponse.ProtoReflect.Descriptor instead.
 func (*GetLatestPublishedVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetLatestPublishedVersionResponse) GetVersion() *AgentVersion {
@@ -1165,7 +1247,7 @@ type UpdateDraftVersionRequest struct {
 
 func (x *UpdateDraftVersionRequest) Reset() {
 	*x = UpdateDraftVersionRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[17]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1177,7 +1259,7 @@ func (x *UpdateDraftVersionRequest) String() string {
 func (*UpdateDraftVersionRequest) ProtoMessage() {}
 
 func (x *UpdateDraftVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[17]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1190,7 +1272,7 @@ func (x *UpdateDraftVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateDraftVersionRequest.ProtoReflect.Descriptor instead.
 func (*UpdateDraftVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *UpdateDraftVersionRequest) GetTenantId() string {
@@ -1230,7 +1312,7 @@ type UpdateDraftVersionResponse struct {
 
 func (x *UpdateDraftVersionResponse) Reset() {
 	*x = UpdateDraftVersionResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[18]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1242,7 +1324,7 @@ func (x *UpdateDraftVersionResponse) String() string {
 func (*UpdateDraftVersionResponse) ProtoMessage() {}
 
 func (x *UpdateDraftVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[18]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1255,7 +1337,7 @@ func (x *UpdateDraftVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateDraftVersionResponse.ProtoReflect.Descriptor instead.
 func (*UpdateDraftVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *UpdateDraftVersionResponse) GetVersion() *AgentVersion {
@@ -1279,7 +1361,7 @@ type PublishVersionRequest struct {
 
 func (x *PublishVersionRequest) Reset() {
 	*x = PublishVersionRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[19]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1291,7 +1373,7 @@ func (x *PublishVersionRequest) String() string {
 func (*PublishVersionRequest) ProtoMessage() {}
 
 func (x *PublishVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[19]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1304,7 +1386,7 @@ func (x *PublishVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishVersionRequest.ProtoReflect.Descriptor instead.
 func (*PublishVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{19}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *PublishVersionRequest) GetTenantId() string {
@@ -1337,7 +1419,7 @@ type PublishVersionResponse struct {
 
 func (x *PublishVersionResponse) Reset() {
 	*x = PublishVersionResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[20]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1349,7 +1431,7 @@ func (x *PublishVersionResponse) String() string {
 func (*PublishVersionResponse) ProtoMessage() {}
 
 func (x *PublishVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[20]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1362,7 +1444,7 @@ func (x *PublishVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishVersionResponse.ProtoReflect.Descriptor instead.
 func (*PublishVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{20}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *PublishVersionResponse) GetVersion() *AgentVersion {
@@ -1386,7 +1468,7 @@ type DeleteDraftVersionRequest struct {
 
 func (x *DeleteDraftVersionRequest) Reset() {
 	*x = DeleteDraftVersionRequest{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[21]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1398,7 +1480,7 @@ func (x *DeleteDraftVersionRequest) String() string {
 func (*DeleteDraftVersionRequest) ProtoMessage() {}
 
 func (x *DeleteDraftVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[21]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1411,7 +1493,7 @@ func (x *DeleteDraftVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDraftVersionRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDraftVersionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{21}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeleteDraftVersionRequest) GetTenantId() string {
@@ -1443,7 +1525,7 @@ type DeleteDraftVersionResponse struct {
 
 func (x *DeleteDraftVersionResponse) Reset() {
 	*x = DeleteDraftVersionResponse{}
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[22]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1455,7 +1537,7 @@ func (x *DeleteDraftVersionResponse) String() string {
 func (*DeleteDraftVersionResponse) ProtoMessage() {}
 
 func (x *DeleteDraftVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_arda_v1_agent_proto_msgTypes[22]
+	mi := &file_proto_arda_v1_agent_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1468,14 +1550,14 @@ func (x *DeleteDraftVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDraftVersionResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDraftVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{22}
+	return file_proto_arda_v1_agent_proto_rawDescGZIP(), []int{23}
 }
 
 var File_proto_arda_v1_agent_proto protoreflect.FileDescriptor
 
 const file_proto_arda_v1_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x19proto/arda/v1/agent.proto\x12\aarda.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aproto/arda/v1/common.proto\"\xed\x02\n" +
+	"\x19proto/arda/v1/agent.proto\x12\aarda.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aproto/arda/v1/common.proto\"\xa9\x03\n" +
 	"\x12AgentConfiguration\x12'\n" +
 	"\x0fprompt_template\x18\x01 \x01(\tR\x0epromptTemplate\x12\x14\n" +
 	"\x05tools\x18\x02 \x03(\tR\x05tools\x123\n" +
@@ -1486,7 +1568,13 @@ const file_proto_arda_v1_agent_proto_rawDesc = "" +
 	"guardrails\x121\n" +
 	"\abudgets\x18\x06 \x01(\v2\x17.google.protobuf.StructR\abudgets\x128\n" +
 	"\n" +
-	"llm_config\x18\a \x01(\v2\x19.arda.v1.LLMConfigurationR\tllmConfig\"\xa4\x01\n" +
+	"llm_config\x18\a \x01(\v2\x19.arda.v1.LLMConfigurationR\tllmConfig\x12:\n" +
+	"\routput_schema\x18\b \x01(\v2\x15.arda.v1.OutputSchemaR\foutputSchema\"\x8d\x01\n" +
+	"\fOutputSchema\x12/\n" +
+	"\x06schema\x18\x01 \x01(\v2\x17.google.protobuf.StructR\x06schema\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x16\n" +
+	"\x06strict\x18\x04 \x01(\bR\x06strict\"\xa4\x01\n" +
 	"\x10LLMConfiguration\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12%\n" +
@@ -1608,88 +1696,91 @@ func file_proto_arda_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_arda_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_arda_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_proto_arda_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_proto_arda_v1_agent_proto_goTypes = []any{
 	(ExecutionMode)(0),                        // 0: arda.v1.ExecutionMode
 	(*AgentConfiguration)(nil),                // 1: arda.v1.AgentConfiguration
-	(*LLMConfiguration)(nil),                  // 2: arda.v1.LLMConfiguration
-	(*Agent)(nil),                             // 3: arda.v1.Agent
-	(*AgentVersion)(nil),                      // 4: arda.v1.AgentVersion
-	(*AgentDetail)(nil),                       // 5: arda.v1.AgentDetail
-	(*CreateAgentRequest)(nil),                // 6: arda.v1.CreateAgentRequest
-	(*CreateAgentResponse)(nil),               // 7: arda.v1.CreateAgentResponse
-	(*GetAgentRequest)(nil),                   // 8: arda.v1.GetAgentRequest
-	(*GetAgentResponse)(nil),                  // 9: arda.v1.GetAgentResponse
-	(*ListAgentsRequest)(nil),                 // 10: arda.v1.ListAgentsRequest
-	(*ListAgentsResponse)(nil),                // 11: arda.v1.ListAgentsResponse
-	(*CreateAgentVersionRequest)(nil),         // 12: arda.v1.CreateAgentVersionRequest
-	(*CreateAgentVersionResponse)(nil),        // 13: arda.v1.CreateAgentVersionResponse
-	(*GetAgentVersionRequest)(nil),            // 14: arda.v1.GetAgentVersionRequest
-	(*GetAgentVersionResponse)(nil),           // 15: arda.v1.GetAgentVersionResponse
-	(*GetLatestPublishedVersionRequest)(nil),  // 16: arda.v1.GetLatestPublishedVersionRequest
-	(*GetLatestPublishedVersionResponse)(nil), // 17: arda.v1.GetLatestPublishedVersionResponse
-	(*UpdateDraftVersionRequest)(nil),         // 18: arda.v1.UpdateDraftVersionRequest
-	(*UpdateDraftVersionResponse)(nil),        // 19: arda.v1.UpdateDraftVersionResponse
-	(*PublishVersionRequest)(nil),             // 20: arda.v1.PublishVersionRequest
-	(*PublishVersionResponse)(nil),            // 21: arda.v1.PublishVersionResponse
-	(*DeleteDraftVersionRequest)(nil),         // 22: arda.v1.DeleteDraftVersionRequest
-	(*DeleteDraftVersionResponse)(nil),        // 23: arda.v1.DeleteDraftVersionResponse
-	(*structpb.Struct)(nil),                   // 24: google.protobuf.Struct
-	(*timestamppb.Timestamp)(nil),             // 25: google.protobuf.Timestamp
-	(*PaginationRequest)(nil),                 // 26: arda.v1.PaginationRequest
-	(*PaginationResponse)(nil),                // 27: arda.v1.PaginationResponse
+	(*OutputSchema)(nil),                      // 2: arda.v1.OutputSchema
+	(*LLMConfiguration)(nil),                  // 3: arda.v1.LLMConfiguration
+	(*Agent)(nil),                             // 4: arda.v1.Agent
+	(*AgentVersion)(nil),                      // 5: arda.v1.AgentVersion
+	(*AgentDetail)(nil),                       // 6: arda.v1.AgentDetail
+	(*CreateAgentRequest)(nil),                // 7: arda.v1.CreateAgentRequest
+	(*CreateAgentResponse)(nil),               // 8: arda.v1.CreateAgentResponse
+	(*GetAgentRequest)(nil),                   // 9: arda.v1.GetAgentRequest
+	(*GetAgentResponse)(nil),                  // 10: arda.v1.GetAgentResponse
+	(*ListAgentsRequest)(nil),                 // 11: arda.v1.ListAgentsRequest
+	(*ListAgentsResponse)(nil),                // 12: arda.v1.ListAgentsResponse
+	(*CreateAgentVersionRequest)(nil),         // 13: arda.v1.CreateAgentVersionRequest
+	(*CreateAgentVersionResponse)(nil),        // 14: arda.v1.CreateAgentVersionResponse
+	(*GetAgentVersionRequest)(nil),            // 15: arda.v1.GetAgentVersionRequest
+	(*GetAgentVersionResponse)(nil),           // 16: arda.v1.GetAgentVersionResponse
+	(*GetLatestPublishedVersionRequest)(nil),  // 17: arda.v1.GetLatestPublishedVersionRequest
+	(*GetLatestPublishedVersionResponse)(nil), // 18: arda.v1.GetLatestPublishedVersionResponse
+	(*UpdateDraftVersionRequest)(nil),         // 19: arda.v1.UpdateDraftVersionRequest
+	(*UpdateDraftVersionResponse)(nil),        // 20: arda.v1.UpdateDraftVersionResponse
+	(*PublishVersionRequest)(nil),             // 21: arda.v1.PublishVersionRequest
+	(*PublishVersionResponse)(nil),            // 22: arda.v1.PublishVersionResponse
+	(*DeleteDraftVersionRequest)(nil),         // 23: arda.v1.DeleteDraftVersionRequest
+	(*DeleteDraftVersionResponse)(nil),        // 24: arda.v1.DeleteDraftVersionResponse
+	(*structpb.Struct)(nil),                   // 25: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),             // 26: google.protobuf.Timestamp
+	(*PaginationRequest)(nil),                 // 27: arda.v1.PaginationRequest
+	(*PaginationResponse)(nil),                // 28: arda.v1.PaginationResponse
 }
 var file_proto_arda_v1_agent_proto_depIdxs = []int32{
 	0,  // 0: arda.v1.AgentConfiguration.execution_mode:type_name -> arda.v1.ExecutionMode
-	24, // 1: arda.v1.AgentConfiguration.guardrails:type_name -> google.protobuf.Struct
-	24, // 2: arda.v1.AgentConfiguration.budgets:type_name -> google.protobuf.Struct
-	2,  // 3: arda.v1.AgentConfiguration.llm_config:type_name -> arda.v1.LLMConfiguration
-	24, // 4: arda.v1.LLMConfiguration.parameters:type_name -> google.protobuf.Struct
-	25, // 5: arda.v1.Agent.created_at:type_name -> google.protobuf.Timestamp
-	25, // 6: arda.v1.Agent.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 7: arda.v1.AgentVersion.configuration:type_name -> arda.v1.AgentConfiguration
-	25, // 8: arda.v1.AgentVersion.created_at:type_name -> google.protobuf.Timestamp
-	25, // 9: arda.v1.AgentVersion.updated_at:type_name -> google.protobuf.Timestamp
-	25, // 10: arda.v1.AgentVersion.published_at:type_name -> google.protobuf.Timestamp
-	3,  // 11: arda.v1.AgentDetail.agent:type_name -> arda.v1.Agent
-	4,  // 12: arda.v1.AgentDetail.latest_published_version:type_name -> arda.v1.AgentVersion
-	4,  // 13: arda.v1.AgentDetail.draft_version:type_name -> arda.v1.AgentVersion
-	1,  // 14: arda.v1.CreateAgentRequest.configuration:type_name -> arda.v1.AgentConfiguration
-	5,  // 15: arda.v1.CreateAgentResponse.agent:type_name -> arda.v1.AgentDetail
-	5,  // 16: arda.v1.GetAgentResponse.agent:type_name -> arda.v1.AgentDetail
-	26, // 17: arda.v1.ListAgentsRequest.pagination:type_name -> arda.v1.PaginationRequest
-	5,  // 18: arda.v1.ListAgentsResponse.agents:type_name -> arda.v1.AgentDetail
-	27, // 19: arda.v1.ListAgentsResponse.pagination:type_name -> arda.v1.PaginationResponse
-	1,  // 20: arda.v1.CreateAgentVersionRequest.configuration:type_name -> arda.v1.AgentConfiguration
-	4,  // 21: arda.v1.CreateAgentVersionResponse.version:type_name -> arda.v1.AgentVersion
-	4,  // 22: arda.v1.GetAgentVersionResponse.version:type_name -> arda.v1.AgentVersion
-	4,  // 23: arda.v1.GetLatestPublishedVersionResponse.version:type_name -> arda.v1.AgentVersion
-	1,  // 24: arda.v1.UpdateDraftVersionRequest.configuration:type_name -> arda.v1.AgentConfiguration
-	4,  // 25: arda.v1.UpdateDraftVersionResponse.version:type_name -> arda.v1.AgentVersion
-	4,  // 26: arda.v1.PublishVersionResponse.version:type_name -> arda.v1.AgentVersion
-	6,  // 27: arda.v1.AgentRegistryService.CreateAgent:input_type -> arda.v1.CreateAgentRequest
-	8,  // 28: arda.v1.AgentRegistryService.GetAgent:input_type -> arda.v1.GetAgentRequest
-	10, // 29: arda.v1.AgentRegistryService.ListAgents:input_type -> arda.v1.ListAgentsRequest
-	12, // 30: arda.v1.AgentRegistryService.CreateAgentVersion:input_type -> arda.v1.CreateAgentVersionRequest
-	14, // 31: arda.v1.AgentRegistryService.GetAgentVersion:input_type -> arda.v1.GetAgentVersionRequest
-	16, // 32: arda.v1.AgentRegistryService.GetLatestPublishedVersion:input_type -> arda.v1.GetLatestPublishedVersionRequest
-	18, // 33: arda.v1.AgentRegistryService.UpdateDraftVersion:input_type -> arda.v1.UpdateDraftVersionRequest
-	20, // 34: arda.v1.AgentRegistryService.PublishVersion:input_type -> arda.v1.PublishVersionRequest
-	22, // 35: arda.v1.AgentRegistryService.DeleteDraftVersion:input_type -> arda.v1.DeleteDraftVersionRequest
-	7,  // 36: arda.v1.AgentRegistryService.CreateAgent:output_type -> arda.v1.CreateAgentResponse
-	9,  // 37: arda.v1.AgentRegistryService.GetAgent:output_type -> arda.v1.GetAgentResponse
-	11, // 38: arda.v1.AgentRegistryService.ListAgents:output_type -> arda.v1.ListAgentsResponse
-	13, // 39: arda.v1.AgentRegistryService.CreateAgentVersion:output_type -> arda.v1.CreateAgentVersionResponse
-	15, // 40: arda.v1.AgentRegistryService.GetAgentVersion:output_type -> arda.v1.GetAgentVersionResponse
-	17, // 41: arda.v1.AgentRegistryService.GetLatestPublishedVersion:output_type -> arda.v1.GetLatestPublishedVersionResponse
-	19, // 42: arda.v1.AgentRegistryService.UpdateDraftVersion:output_type -> arda.v1.UpdateDraftVersionResponse
-	21, // 43: arda.v1.AgentRegistryService.PublishVersion:output_type -> arda.v1.PublishVersionResponse
-	23, // 44: arda.v1.AgentRegistryService.DeleteDraftVersion:output_type -> arda.v1.DeleteDraftVersionResponse
-	36, // [36:45] is the sub-list for method output_type
-	27, // [27:36] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	25, // 1: arda.v1.AgentConfiguration.guardrails:type_name -> google.protobuf.Struct
+	25, // 2: arda.v1.AgentConfiguration.budgets:type_name -> google.protobuf.Struct
+	3,  // 3: arda.v1.AgentConfiguration.llm_config:type_name -> arda.v1.LLMConfiguration
+	2,  // 4: arda.v1.AgentConfiguration.output_schema:type_name -> arda.v1.OutputSchema
+	25, // 5: arda.v1.OutputSchema.schema:type_name -> google.protobuf.Struct
+	25, // 6: arda.v1.LLMConfiguration.parameters:type_name -> google.protobuf.Struct
+	26, // 7: arda.v1.Agent.created_at:type_name -> google.protobuf.Timestamp
+	26, // 8: arda.v1.Agent.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 9: arda.v1.AgentVersion.configuration:type_name -> arda.v1.AgentConfiguration
+	26, // 10: arda.v1.AgentVersion.created_at:type_name -> google.protobuf.Timestamp
+	26, // 11: arda.v1.AgentVersion.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 12: arda.v1.AgentVersion.published_at:type_name -> google.protobuf.Timestamp
+	4,  // 13: arda.v1.AgentDetail.agent:type_name -> arda.v1.Agent
+	5,  // 14: arda.v1.AgentDetail.latest_published_version:type_name -> arda.v1.AgentVersion
+	5,  // 15: arda.v1.AgentDetail.draft_version:type_name -> arda.v1.AgentVersion
+	1,  // 16: arda.v1.CreateAgentRequest.configuration:type_name -> arda.v1.AgentConfiguration
+	6,  // 17: arda.v1.CreateAgentResponse.agent:type_name -> arda.v1.AgentDetail
+	6,  // 18: arda.v1.GetAgentResponse.agent:type_name -> arda.v1.AgentDetail
+	27, // 19: arda.v1.ListAgentsRequest.pagination:type_name -> arda.v1.PaginationRequest
+	6,  // 20: arda.v1.ListAgentsResponse.agents:type_name -> arda.v1.AgentDetail
+	28, // 21: arda.v1.ListAgentsResponse.pagination:type_name -> arda.v1.PaginationResponse
+	1,  // 22: arda.v1.CreateAgentVersionRequest.configuration:type_name -> arda.v1.AgentConfiguration
+	5,  // 23: arda.v1.CreateAgentVersionResponse.version:type_name -> arda.v1.AgentVersion
+	5,  // 24: arda.v1.GetAgentVersionResponse.version:type_name -> arda.v1.AgentVersion
+	5,  // 25: arda.v1.GetLatestPublishedVersionResponse.version:type_name -> arda.v1.AgentVersion
+	1,  // 26: arda.v1.UpdateDraftVersionRequest.configuration:type_name -> arda.v1.AgentConfiguration
+	5,  // 27: arda.v1.UpdateDraftVersionResponse.version:type_name -> arda.v1.AgentVersion
+	5,  // 28: arda.v1.PublishVersionResponse.version:type_name -> arda.v1.AgentVersion
+	7,  // 29: arda.v1.AgentRegistryService.CreateAgent:input_type -> arda.v1.CreateAgentRequest
+	9,  // 30: arda.v1.AgentRegistryService.GetAgent:input_type -> arda.v1.GetAgentRequest
+	11, // 31: arda.v1.AgentRegistryService.ListAgents:input_type -> arda.v1.ListAgentsRequest
+	13, // 32: arda.v1.AgentRegistryService.CreateAgentVersion:input_type -> arda.v1.CreateAgentVersionRequest
+	15, // 33: arda.v1.AgentRegistryService.GetAgentVersion:input_type -> arda.v1.GetAgentVersionRequest
+	17, // 34: arda.v1.AgentRegistryService.GetLatestPublishedVersion:input_type -> arda.v1.GetLatestPublishedVersionRequest
+	19, // 35: arda.v1.AgentRegistryService.UpdateDraftVersion:input_type -> arda.v1.UpdateDraftVersionRequest
+	21, // 36: arda.v1.AgentRegistryService.PublishVersion:input_type -> arda.v1.PublishVersionRequest
+	23, // 37: arda.v1.AgentRegistryService.DeleteDraftVersion:input_type -> arda.v1.DeleteDraftVersionRequest
+	8,  // 38: arda.v1.AgentRegistryService.CreateAgent:output_type -> arda.v1.CreateAgentResponse
+	10, // 39: arda.v1.AgentRegistryService.GetAgent:output_type -> arda.v1.GetAgentResponse
+	12, // 40: arda.v1.AgentRegistryService.ListAgents:output_type -> arda.v1.ListAgentsResponse
+	14, // 41: arda.v1.AgentRegistryService.CreateAgentVersion:output_type -> arda.v1.CreateAgentVersionResponse
+	16, // 42: arda.v1.AgentRegistryService.GetAgentVersion:output_type -> arda.v1.GetAgentVersionResponse
+	18, // 43: arda.v1.AgentRegistryService.GetLatestPublishedVersion:output_type -> arda.v1.GetLatestPublishedVersionResponse
+	20, // 44: arda.v1.AgentRegistryService.UpdateDraftVersion:output_type -> arda.v1.UpdateDraftVersionResponse
+	22, // 45: arda.v1.AgentRegistryService.PublishVersion:output_type -> arda.v1.PublishVersionResponse
+	24, // 46: arda.v1.AgentRegistryService.DeleteDraftVersion:output_type -> arda.v1.DeleteDraftVersionResponse
+	38, // [38:47] is the sub-list for method output_type
+	29, // [29:38] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_proto_arda_v1_agent_proto_init() }
@@ -1704,7 +1795,7 @@ func file_proto_arda_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_arda_v1_agent_proto_rawDesc), len(file_proto_arda_v1_agent_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   23,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

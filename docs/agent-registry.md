@@ -120,3 +120,93 @@ export DATABASE_URL="postgres://arda_user:arda_password@127.0.0.1:5432/arda?sslm
 
 go run cmd/registry/main.go
 ```
+
+---
+
+## 7. Structured-Output Configuration (JSON Schema Draft-07)
+
+Agents can optionally declare an `output_schema` to enforce schema-validated structured responses from LLM executions. When configured, ARDA's agent runtime verifies the model's completion against the contract and surfaces a parsed JSON object directly in the execution result.
+
+### Supported JSON Schema Version & Features
+ARDA implements a zero-dependency, safe validator adhering to **JSON Schema Draft-07** (`http://json-schema.org/draft-07/schema#`). Supported keywords include:
+- **Core Types:** `object`, `array`, `string`, `number`, `integer`, `boolean`, `null` (supports union types like `["string", "null"]`).
+- **Object Constraints:** `properties`, `required`, `additionalProperties` (boolean or sub-schema), `minProperties`, `maxProperties`, `patternProperties`.
+- **Array Constraints:** `items` (single schema or tuple schema array), `additionalItems`, `minItems`, `maxItems`, `uniqueItems`.
+- **String Constraints:** `minLength`, `maxLength`, `pattern` (bounded regex), `format`.
+- **Numeric Constraints:** `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`.
+- **Value Matching:** `enum`, `const`.
+- **Combinators:** `allOf`, `anyOf`, `oneOf`, `not`.
+- **Local Definitions:** Local references to `#/definitions/...` and `#/$defs/...`.
+
+### Security Bounds & DoS Guardrails
+- **No Remote Network Fetching:** Remote `$ref` URIs (e.g., `http://`, `https://`, `ftp://`, or external files) are strictly forbidden and rejected at configuration time (`ErrRemoteRefForbidden`).
+- **Schema Size Limit:** Schema definition must not exceed **64 KB** (`ErrSchemaTooLarge`).
+- **Schema Depth Limit:** Nesting depth is capped at **10 levels** (`ErrSchemaTooDeep`).
+- **Regex Length Limit:** Pattern expressions are limited to **250 characters** (`ErrInvalidRegex`).
+- **Response Size Limit:** Model completions exceeding **1 MB** before JSON parsing are immediately rejected (`ErrOutputTooLarge`).
+- **Strict Parsing:** Markdown code fences (e.g. ` ```json `) and trailing syntax are NOT silently stripped. Model outputs must be pure JSON.
+
+### Configuration Example
+```json
+{
+  "name": "SentimentAnalyzer",
+  "prompt_template": "Classify the sentiment of: {{input.text}}. Output only JSON matching schema.",
+  "execution_mode": "autonomous",
+  "reliability_threshold": 0.9,
+  "output_schema": {
+    "name": "SentimentScore",
+    "description": "Normalized sentiment label and numeric score",
+    "strict": true,
+    "schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "required": ["sentiment", "confidence", "tags"],
+      "properties": {
+        "sentiment": {
+          "type": "string",
+          "enum": ["positive", "neutral", "negative"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
+```
+
+### Result Compatibility
+For structured agents, the execution result contains:
+```json
+{
+  "status": "SUCCESS",
+  "structured_output": {
+    "sentiment": "positive",
+    "confidence": 0.98,
+    "tags": ["service", "onboarding"]
+  },
+  "output": {
+    "content": "{\"sentiment\": \"positive\", \"confidence\": 0.98, \"tags\": [\"service\", \"onboarding\"]}",
+    "response": "{\"sentiment\": \"positive\", \"confidence\": 0.98, \"tags\": [\"service\", \"onboarding\"]}",
+    "structured_output": {
+      "sentiment": "positive",
+      "confidence": 0.98,
+      "tags": ["service", "onboarding"]
+    }
+  }
+}
+```
+
+### Failure & Retry Semantics
+- **Schema Violations (`ErrSchemaViolation`)** & **Malformed JSON (`ErrInvalidOutputJSON`)**: Categorized as `CategoryPermanent`. In Temporal, these immediately fail the execution with a non-retryable `PermanentExecutionError`, preventing infinite retry loops and runaway token costs.
+- **Provider Failures (Rate limits 429, Server errors 503)**: Categorized as `CategoryTransient` and retried according to the bounded Temporal activity retry policy.
+- **Backward Compatibility**: Agents without `output_schema` return standard string outputs in `Output["content"]` and `Output["response"]` without `structured_output`.
+

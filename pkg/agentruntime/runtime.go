@@ -60,6 +60,21 @@ var (
 
 	// ErrMissingCredential indicates that a required credential was not provided or resolver is unconfigured.
 	ErrMissingCredential = errors.New("agentruntime: missing provider credential")
+
+	// ErrInvalidOutputSchema indicates that the configured output schema is invalid.
+	ErrInvalidOutputSchema = errors.New("agentruntime: invalid output schema")
+
+	// ErrInvalidOutputJSON indicates that the model output is malformed JSON.
+	ErrInvalidOutputJSON = errors.New("agentruntime: invalid output JSON")
+
+	// ErrSchemaViolation indicates that the model output violates the configured JSON Schema.
+	ErrSchemaViolation = errors.New("agentruntime: output schema violation")
+
+	// ErrOutputTooLarge indicates that the model output exceeds the size limit.
+	ErrOutputTooLarge = errors.New("agentruntime: output exceeds size limit")
+
+	// ErrInternalValidation indicates an internal failure during schema compilation or validation.
+	ErrInternalValidation = errors.New("agentruntime: internal validation failure")
 )
 
 // ErrorCategory defines the classification of a runtime failure for retry and propagation decisions.
@@ -161,7 +176,12 @@ func ClassifyError(err error) ErrorCategory {
 		errors.Is(err, ErrUnsupportedModel) ||
 		errors.Is(err, ErrCredentialNotFound) ||
 		errors.Is(err, ErrEmptyCredential) ||
-		errors.Is(err, ErrMissingCredential) {
+		errors.Is(err, ErrMissingCredential) ||
+		errors.Is(err, ErrInvalidOutputSchema) ||
+		errors.Is(err, ErrInvalidOutputJSON) ||
+		errors.Is(err, ErrSchemaViolation) ||
+		errors.Is(err, ErrOutputTooLarge) ||
+		errors.Is(err, ErrInternalValidation) {
 		return CategoryPermanent
 	}
 	if errors.Is(err, ErrTransient) {
@@ -228,10 +248,11 @@ func (in ExecutionInput) Validate() error {
 
 // ExecutionResult represents the structured outcome of an agent execution.
 type ExecutionResult struct {
-	Status     ExecutionStatus `json:"status"`
-	Output     map[string]any  `json:"output,omitempty"`
-	Reason     string          `json:"reason,omitempty"`
-	Escalation *EscalationInfo `json:"escalation,omitempty"`
+	Status           ExecutionStatus `json:"status"`
+	Output           map[string]any  `json:"output,omitempty"`
+	StructuredOutput any             `json:"structured_output,omitempty"`
+	Reason           string          `json:"reason,omitempty"`
+	Escalation       *EscalationInfo `json:"escalation,omitempty"`
 }
 
 // Validate enforces valid status values and structural constraints on execution results.
