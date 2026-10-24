@@ -6,19 +6,25 @@ import "fmt"
 type Action string
 
 const (
-	ActionAgentCreate      Action = "agent:create"
-	ActionAgentRead        Action = "agent:read"
-	ActionAgentExecute     Action = "agent:execute"
-	ActionVersionCreate    Action = "version:create"
-	ActionVersionUpdate    Action = "version:update"
-	ActionVersionPublish   Action = "version:publish"
-	ActionVersionDelete    Action = "version:delete"
-	ActionReliabilityGate  Action = "reliability:gate"
-	ActionCredentialManage Action = "credential:manage"
-	ActionCredentialRead   Action = "credential:read"
-	ActionTenantCreate     Action = "tenant:create"
+	ActionAgentCreate        Action = "agent:create"
+	ActionAgentRead          Action = "agent:read"
+	ActionAgentExecute       Action = "agent:execute"
+	ActionVersionCreate      Action = "version:create"
+	ActionVersionUpdate      Action = "version:update"
+	ActionVersionPublish     Action = "version:publish"
+	ActionVersionDelete      Action = "version:delete"
+	ActionReliabilityGate    Action = "reliability:gate"
+	ActionCredentialManage   Action = "credential:manage"
+	ActionCredentialRead     Action = "credential:read"
+	ActionTenantCreate       Action = "tenant:create"
 	ActionTenantMemberManage Action = "tenant:member:manage"
-	ActionTenantMemberRead Action = "tenant:member:read"
+	ActionTenantMemberRead   Action = "tenant:member:read"
+	ActionToolCreate         Action = "tool:create"
+	ActionToolRead           Action = "tool:read"
+	ActionToolUpdate         Action = "tool:update"
+	ActionToolDelete         Action = "tool:delete"
+	ActionToolExecute        Action = "tool:execute"
+	ActionAuditRead          Action = "audit:read"
 )
 
 // Policy defines the authorization policy matrix across all ARDA roles.
@@ -37,6 +43,12 @@ var Policy = map[Role]map[Action]bool{
 		ActionTenantCreate:       true,  // Full for /tenants platform management
 		ActionTenantMemberManage: false, // Tenant scoped
 		ActionTenantMemberRead:   false, // Tenant scoped
+		ActionToolCreate:         false,
+		ActionToolRead:           false,
+		ActionToolUpdate:         false,
+		ActionToolDelete:         false,
+		ActionToolExecute:        false,
+		ActionAuditRead:          false,
 	},
 	RoleCompanyAdmin: {
 		ActionAgentCreate:        true,
@@ -52,6 +64,12 @@ var Policy = map[Role]map[Action]bool{
 		ActionTenantCreate:       false, // Platform tenants managed by super_admin
 		ActionTenantMemberManage: true,  // Full for own tenant
 		ActionTenantMemberRead:   true,
+		ActionToolCreate:         true,
+		ActionToolRead:           true,
+		ActionToolUpdate:         true,
+		ActionToolDelete:         true,
+		ActionToolExecute:        true,
+		ActionAuditRead:          true,
 	},
 	RoleAgentDeveloper: {
 		ActionAgentCreate:        true,
@@ -67,6 +85,12 @@ var Policy = map[Role]map[Action]bool{
 		ActionTenantCreate:       false,
 		ActionTenantMemberManage: false, // Self only via /auth/me
 		ActionTenantMemberRead:   false,
+		ActionToolCreate:         true,
+		ActionToolRead:           true,
+		ActionToolUpdate:         true,
+		ActionToolDelete:         false, // Cannot delete tool definitions
+		ActionToolExecute:        true,
+		ActionAuditRead:          true,
 	},
 	RoleReviewer: {
 		ActionAgentCreate:        false,
@@ -82,6 +106,12 @@ var Policy = map[Role]map[Action]bool{
 		ActionTenantCreate:       false,
 		ActionTenantMemberManage: false, // Self only via /auth/me
 		ActionTenantMemberRead:   false,
+		ActionToolCreate:         false,
+		ActionToolRead:           true,
+		ActionToolUpdate:         false,
+		ActionToolDelete:         false,
+		ActionToolExecute:        false,
+		ActionAuditRead:          true,
 	},
 }
 

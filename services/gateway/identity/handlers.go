@@ -352,9 +352,10 @@ func (h *Handler) DeleteTenantMemberHandler(c *gin.Context) {
 
 // ListUsersHandler handles GET /api/v1/users
 // RBAC:
-//   company_admin: full (own tenant)
-//   agent_developer / reviewer: self only
-//   super_admin: - (denied)
+//
+//	company_admin: full (own tenant)
+//	agent_developer / reviewer: self only
+//	super_admin: - (denied)
 func (h *Handler) ListUsersHandler(c *gin.Context) {
 	identity, ok := h.getIdentity(c)
 	if !ok {
@@ -386,8 +387,9 @@ func (h *Handler) ListUsersHandler(c *gin.Context) {
 
 // GetUserHandler handles GET /api/v1/users/:userId
 // RBAC:
-//   company_admin: can view any member in own tenant
-//   agent_developer / reviewer: self only ("me" or matching identity.UserID)
+//
+//	company_admin: can view any member in own tenant
+//	agent_developer / reviewer: self only ("me" or matching identity.UserID)
 func (h *Handler) GetUserHandler(c *gin.Context) {
 	identity, ok := h.getIdentity(c)
 	if !ok {
@@ -458,4 +460,3 @@ func (h *Handler) DeleteUserHandler(c *gin.Context) {
 	c.Params = append(c.Params, gin.Param{Key: "tenantId", Value: identity.TenantID.String()})
 	h.DeleteTenantMemberHandler(c)
 }
-

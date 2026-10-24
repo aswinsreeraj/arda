@@ -44,6 +44,7 @@ type GatewayConfig struct {
 	TemporalClient     WorkflowDispatcher
 	CredentialHandler  *credentials.Handler
 	IdentityHandler    *identity.Handler
+	ToolsHandler       *ToolsHandler
 }
 
 // NewGateway creates and configures the API Gateway root http.Handler.
@@ -228,6 +229,38 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			handleExecuteAgent(c, execClient, cfg.RegistryClient, cfg.RegistryService)
 		},
 	)
+
+	// Tool Registry and Governance
+	if cfg.ToolsHandler != nil {
+		api.POST("/v1/tools",
+			auth.RequireActionMiddleware(auth.ActionToolCreate, WriteErrorResponse),
+			cfg.ToolsHandler.RegisterToolHandler,
+		)
+		api.GET("/v1/tools",
+			auth.RequireActionMiddleware(auth.ActionToolRead, WriteErrorResponse),
+			cfg.ToolsHandler.ListToolsHandler,
+		)
+		api.GET("/v1/tools/:id",
+			auth.RequireActionMiddleware(auth.ActionToolRead, WriteErrorResponse),
+			cfg.ToolsHandler.GetToolHandler,
+		)
+		api.PUT("/v1/tools/:id",
+			auth.RequireActionMiddleware(auth.ActionToolUpdate, WriteErrorResponse),
+			cfg.ToolsHandler.UpdateToolHandler,
+		)
+		api.PATCH("/v1/tools/:id/enable",
+			auth.RequireActionMiddleware(auth.ActionToolUpdate, WriteErrorResponse),
+			cfg.ToolsHandler.EnableToolHandler,
+		)
+		api.DELETE("/v1/tools/:id",
+			auth.RequireActionMiddleware(auth.ActionToolDelete, WriteErrorResponse),
+			cfg.ToolsHandler.DeleteToolHandler,
+		)
+		api.GET("/v1/tools/audit",
+			auth.RequireActionMiddleware(auth.ActionAuditRead, WriteErrorResponse),
+			cfg.ToolsHandler.ListAuditEventsHandler,
+		)
+	}
 
 	// Identity and Tenant Membership
 	if cfg.IdentityHandler != nil {

@@ -12,7 +12,7 @@ import (
 )
 
 type mockTokenIssuer struct {
-	lastIdentity auth.Identity
+	lastIdentity  auth.Identity
 	tokenToReturn string
 	errToReturn   error
 }

@@ -14,12 +14,12 @@ import (
 )
 
 var (
-	ErrUserNotFound             = errors.New("user not found")
-	ErrUserAlreadyExists         = errors.New("user with this email already exists")
-	ErrTenantNotFound           = errors.New("tenant not found")
-	ErrMembershipNotFound       = errors.New("tenant membership not found")
-	ErrMembershipAlreadyExists   = errors.New("user already has a membership in this tenant")
-	ErrCannotRemoveLastAdmin    = errors.New("cannot remove or demote the last active tenant administrator")
+	ErrUserNotFound            = errors.New("user not found")
+	ErrUserAlreadyExists       = errors.New("user with this email already exists")
+	ErrTenantNotFound          = errors.New("tenant not found")
+	ErrMembershipNotFound      = errors.New("tenant membership not found")
+	ErrMembershipAlreadyExists = errors.New("user already has a membership in this tenant")
+	ErrCannotRemoveLastAdmin   = errors.New("cannot remove or demote the last active tenant administrator")
 )
 
 // Store defines persistence operations for user accounts, tenants, and memberships.

@@ -101,13 +101,13 @@ type RegisterRequest struct {
 
 // RegisterTenantRequest represents the payload to register a tenant and company admin in one go.
 type RegisterTenantRequest struct {
-	CompanyName      string `json:"company_name"`
-	TenantName       string `json:"tenant_name,omitempty"`
-	AdminEmail       string `json:"admin_email"`
-	Email            string `json:"email,omitempty"`
-	Password         string `json:"password"`
-	AdminPassword    string `json:"admin_password,omitempty"`
-	DisplayName      string `json:"display_name"`
+	CompanyName   string `json:"company_name"`
+	TenantName    string `json:"tenant_name,omitempty"`
+	AdminEmail    string `json:"admin_email"`
+	Email         string `json:"email,omitempty"`
+	Password      string `json:"password"`
+	AdminPassword string `json:"admin_password,omitempty"`
+	DisplayName   string `json:"display_name"`
 }
 
 // RegisterTenantResponse represents the combined tenant + admin registration response.
