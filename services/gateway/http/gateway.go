@@ -346,7 +346,11 @@ func handleReliabilityGate(c *gin.Context, relSvc proxy.ReliabilityService) {
 }
 
 type executeRequestBody struct {
-	Input map[string]any `json:"input,omitempty"`
+	AgentVersionID *uuid.UUID     `json:"agent_version_id,omitempty"`
+	VersionID      *uuid.UUID     `json:"version_id,omitempty"`
+	Input          map[string]any `json:"input,omitempty"`
+	ExecutionMode  string         `json:"execution_mode,omitempty"`
+	ExecutionID    string         `json:"execution_id,omitempty"`
 }
 
 // ExecuteAgentResponse represents the 202 Accepted response payload returned by agent execution dispatch.
@@ -385,8 +389,60 @@ func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceCli
 		return
 	}
 
+	var explicitVerID uuid.UUID
+	if body.AgentVersionID != nil && *body.AgentVersionID != uuid.Nil {
+		explicitVerID = *body.AgentVersionID
+	} else if body.VersionID != nil && *body.VersionID != uuid.Nil {
+		explicitVerID = *body.VersionID
+	}
+
 	var verID uuid.UUID
-	if regClient != nil {
+	if explicitVerID != uuid.Nil {
+		verID = explicitVerID
+		if regClient != nil {
+			ctx := withInternalAuth(c.Request.Context(), identity)
+			resp, err := regClient.GetAgentVersion(ctx, &ardav1.GetAgentVersionRequest{
+				TenantId:  identity.TenantID.String(),
+				AgentId:   agentID.String(),
+				VersionId: explicitVerID.String(),
+			})
+			if err != nil {
+				status, code, msg := registrygrpc.MapGRPCErrorToHTTP(err)
+				WriteErrorResponse(c.Writer, status, code, msg)
+				return
+			}
+			if resp == nil || resp.GetVersion() == nil {
+				WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "agent version not found")
+				return
+			}
+		} else if vg, ok := regSvc.(interface {
+			GetVersion(ctx context.Context, tenantID, agentID, versionID uuid.UUID) (*domain.AgentVersion, error)
+		}); ok {
+			ver, err := vg.GetVersion(c.Request.Context(), identity.TenantID, agentID, explicitVerID)
+			if err != nil {
+				var domErr *domain.DomainError
+				if errors.As(err, &domErr) {
+					statusCode := http.StatusInternalServerError
+					switch domErr.Code {
+					case domain.CodeNotFound:
+						statusCode = http.StatusNotFound
+					case domain.CodeValidationFailed:
+						statusCode = http.StatusBadRequest
+					case domain.CodeUnauthenticated:
+						statusCode = http.StatusUnauthorized
+					}
+					WriteErrorResponse(c.Writer, statusCode, string(domErr.Code), domErr.Message)
+					return
+				}
+				WriteErrorResponse(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to resolve agent version")
+				return
+			}
+			if ver == nil {
+				WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", "agent version not found")
+				return
+			}
+		}
+	} else if regClient != nil {
 		ctx := withInternalAuth(c.Request.Context(), identity)
 		resp, err := regClient.GetLatestPublishedVersion(ctx, &ardav1.GetLatestPublishedVersionRequest{
 			TenantId: identity.TenantID.String(),
@@ -448,6 +504,9 @@ func handleExecuteAgent(c *gin.Context, regClient ardav1.AgentRegistryServiceCli
 	}
 
 	workflowID := fmt.Sprintf("agent-exec-%s-%s", agentID, uuid.New().String())
+	if strings.TrimSpace(body.ExecutionID) != "" {
+		workflowID = fmt.Sprintf("agent-exec-%s-%s", agentID, strings.TrimSpace(body.ExecutionID))
+	}
 	run, err := temporalClient.StartAgentExecutionWorkflow(c.Request.Context(), workflowID, wfInput)
 	if err != nil {
 		WriteErrorResponse(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", "failed to dispatch execution workflow to temporal")
