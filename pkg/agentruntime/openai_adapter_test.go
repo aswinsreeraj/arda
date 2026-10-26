@@ -467,3 +467,202 @@ func TestOpenAIAdapter_TransportSecretRedaction(t *testing.T) {
 		t.Fatalf("CRITICAL SECURITY VIOLATION: error leaked fakeSecret! Error: %s", errMsg)
 	}
 }
+
+func TestGroqAdapter_Success(t *testing.T) {
+	fakeKey := "gsk_test_api_key_secret_12345"
+	var capturedAuth string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl-groq-123",
+			"model": "llama-3.3-70b-versatile",
+			"choices": [{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": "Hello from Groq Cloud Llama 3.3!"
+				}
+			}],
+			"usage": {
+				"prompt_tokens": 14,
+				"completion_tokens": 9,
+				"total_tokens": 23
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := agentruntime.NewGroqAdapter(
+		agentruntime.WithOpenAIBaseURL(server.URL),
+		agentruntime.WithOpenAIHTTPClient(server.Client()),
+	)
+
+	if adapter.ProviderID() != "groq" {
+		t.Fatalf("expected provider ID 'groq', got %q", adapter.ProviderID())
+	}
+
+	resp, err := adapter.GenerateWithCredential(context.Background(), fakeKey, agentruntime.LLMRequest{
+		Prompt: "Test groq prompt",
+		Model:  "llama-3.3-70b-versatile",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuth != "Bearer "+fakeKey {
+		t.Fatalf("expected Bearer auth %q, got %q", "Bearer "+fakeKey, capturedAuth)
+	}
+	if resp.Content != "Hello from Groq Cloud Llama 3.3!" {
+		t.Fatalf("unexpected response content: %q", resp.Content)
+	}
+	if resp.Usage.PromptTokens != 14 || resp.Usage.CompletionTokens != 9 {
+		t.Fatalf("unexpected token usage: %+v", resp.Usage)
+	}
+}
+
+func TestGroqAdapter_ModelValidation(t *testing.T) {
+	adapter := agentruntime.NewGroqAdapter()
+
+	// Supported Groq models
+	if !adapter.IsModelSupported("llama-3.3-70b-versatile") {
+		t.Error("expected llama-3.3-70b-versatile to be supported")
+	}
+	if !adapter.IsModelSupported("llama-3.1-8b-instant") {
+		t.Error("expected llama-3.1-8b-instant to be supported")
+	}
+	if !adapter.IsModelSupported("mixtral-8x7b-32768") {
+		t.Error("expected mixtral-8x7b-32768 to be supported")
+	}
+
+	// Unsupported models on Groq
+	if adapter.IsModelSupported("gpt-4o") {
+		t.Error("expected gpt-4o to be unsupported on Groq adapter")
+	}
+}
+
+func TestOpenRouterAdapter_Success(t *testing.T) {
+	fakeKey := "sk-or-v1-test-api-key-secret-12345"
+	var capturedAuth string
+	var capturedReferer string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		capturedReferer = r.Header.Get("HTTP-Referer")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "gen-openrouter-123",
+			"model": "anthropic/claude-3.5-sonnet",
+			"choices": [{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": "Hello from OpenRouter!"
+				}
+			}],
+			"usage": {
+				"prompt_tokens": 18,
+				"completion_tokens": 10,
+				"total_tokens": 28
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := agentruntime.NewOpenRouterAdapter(
+		agentruntime.WithOpenAIBaseURL(server.URL),
+		agentruntime.WithOpenAIHTTPClient(server.Client()),
+	)
+
+	if adapter.ProviderID() != "openrouter" {
+		t.Fatalf("expected provider ID 'openrouter', got %q", adapter.ProviderID())
+	}
+
+	// OpenRouter supports any valid model format
+	if !adapter.IsModelSupported("any-custom-provider/any-model:free") {
+		t.Error("expected OpenRouter to support arbitrary model identifiers")
+	}
+
+	resp, err := adapter.GenerateWithCredential(context.Background(), fakeKey, agentruntime.LLMRequest{
+		Prompt: "Test OpenRouter prompt",
+		Model:  "anthropic/claude-3.5-sonnet",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuth != "Bearer "+fakeKey {
+		t.Fatalf("expected Bearer auth %q, got %q", "Bearer "+fakeKey, capturedAuth)
+	}
+	if capturedReferer != "https://arda.dev" {
+		t.Fatalf("expected HTTP-Referer header, got %q", capturedReferer)
+	}
+	if resp.Content != "Hello from OpenRouter!" {
+		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+}
+
+func TestGrokAdapter_Success(t *testing.T) {
+	fakeKey := "xai-test-api-key-secret-12345"
+	var capturedAuth string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl-grok-123",
+			"model": "grok-2",
+			"choices": [{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": "Hello from xAI Grok-2!"
+				}
+			}],
+			"usage": {
+				"prompt_tokens": 20,
+				"completion_tokens": 12,
+				"total_tokens": 32
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := agentruntime.NewGrokAdapter(
+		agentruntime.WithOpenAIBaseURL(server.URL),
+		agentruntime.WithOpenAIHTTPClient(server.Client()),
+	)
+
+	if adapter.ProviderID() != "grok" {
+		t.Fatalf("expected provider ID 'grok', got %q", adapter.ProviderID())
+	}
+
+	if !adapter.IsModelSupported("grok-2") || !adapter.IsModelSupported("grok-beta") {
+		t.Error("expected grok models to be supported")
+	}
+	if adapter.IsModelSupported("gpt-4o") {
+		t.Error("expected gpt-4o to be unsupported on Grok adapter")
+	}
+
+	resp, err := adapter.GenerateWithCredential(context.Background(), fakeKey, agentruntime.LLMRequest{
+		Prompt: "Test Grok prompt",
+		Model:  "grok-2",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuth != "Bearer "+fakeKey {
+		t.Fatalf("expected Bearer auth %q, got %q", "Bearer "+fakeKey, capturedAuth)
+	}
+	if resp.Content != "Hello from xAI Grok-2!" {
+		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+}
+

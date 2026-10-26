@@ -74,13 +74,10 @@ func NewGateway(cfg GatewayConfig) *Gateway {
 }
 
 // ExecuteTool evaluates governance rules and dispatches authorized tool invocations.
-// It executes the 10-step governance pipeline in strict order.
 func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutionRequest) (agentruntime.ToolExecutionResponse, error) {
 	startTime := time.Now().UTC()
 
-	// -------------------------------------------------------------------------
-	// Step 1: Validate authenticated tenant and execution context
-	// -------------------------------------------------------------------------
+	// Validate request and execution context
 	if err := req.Validate(); err != nil {
 		g.emitAudit(ctx, AuditEvent{
 			EventID:            uuid.New().String(),
@@ -129,9 +126,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		}, nil
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 2: Resolve pinned agent identity and version
-	// -------------------------------------------------------------------------
+	// Resolve pinned agent version if config provider is available
 	var agentCfg *domain.Configuration
 	if g.configProvider != nil {
 		resolvedCfg, err := g.configProvider.GetAgentConfig(ctx, req.TenantID, req.AgentID, req.AgentVersionID)
@@ -161,9 +156,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		agentCfg = &resolvedCfg
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 3: Resolve tool definition from Registry
-	// -------------------------------------------------------------------------
+	// Resolve tool definition from registry
 	tool, err := g.registry.GetToolByName(ctx, req.TenantID, req.ToolName)
 	if err != nil {
 		// Attempt resolution by tool ID
@@ -195,9 +188,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		}
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 4: Confirm tool is enabled and allowed for that agent
-	// -------------------------------------------------------------------------
+	// Verify tool is enabled and permitted
 	if !tool.Enabled {
 		g.emitAudit(ctx, AuditEvent{
 			EventID:            uuid.New().String(),
@@ -262,9 +253,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		}
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 5: Validate arguments against the registered schema
-	// -------------------------------------------------------------------------
+	// Validate input arguments against registered schema
 	schema, err := jsonschema.Compile(tool.InputSchema)
 	if err != nil {
 		// Schema compilation failure on registered tool should fail closed
@@ -279,9 +268,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		return g.denialResponse(ctx, req, *tool, startTime, DenialCodeSchemaValidationFailed, fmt.Sprintf("arguments violate tool schema: %v", err))
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 6: Enforce tenant-scoped authorization and RBAC
-	// -------------------------------------------------------------------------
+	// Tenant boundary and authorization checks
 	if tool.TenantID != req.TenantID {
 		return g.denialResponse(ctx, req, *tool, startTime, DenialCodeUnauthorized, "cross-tenant tool execution forbidden")
 	}
@@ -292,9 +279,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		}
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 7: Apply deterministic hard business-rule guardrails
-	// -------------------------------------------------------------------------
+	// Business guardrails
 	if g.guardrail != nil {
 		guardCtx := GuardrailContext{
 			TenantID:       req.TenantID,
@@ -314,9 +299,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		}
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 8: Enforce invocation limits and idempotency
-	// -------------------------------------------------------------------------
+	// Idempotency check and concurrency lock
 	invID, err := DeriveInvocationID(req.ExecutionID, tool.Name, req.Arguments)
 	if err != nil {
 		return g.denialResponse(ctx, req, *tool, startTime, DenialCodeIdempotencyConflict, fmt.Sprintf("failed to derive invocation ID: %v", err))
@@ -386,9 +369,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 	}
 	_ = g.store.SaveInvocation(ctx, inv)
 
-	// -------------------------------------------------------------------------
-	// Step 9: Execute the authorized handler
-	// -------------------------------------------------------------------------
+	// Dispatch to tool handler
 	handler, ok := g.handlers.Get(tool.HandlerID)
 	if !ok {
 		inv.Status = StatusFailed
@@ -426,9 +407,7 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		return g.denialResponse(ctx, req, *tool, startTime, DenialCodeExecutionFailed, fmt.Sprintf("tool execution failed: %v", execErr))
 	}
 
-	// -------------------------------------------------------------------------
-	// Step 10: Record the outcome and return a sanitized result
-	// -------------------------------------------------------------------------
+	// Validate output payload size and serialize
 	outputBytes, err := json.Marshal(res)
 	if err != nil {
 		inv.Status = StatusFailed

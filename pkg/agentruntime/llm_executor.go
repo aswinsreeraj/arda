@@ -106,14 +106,8 @@ func NewLLMExecutor(llmClient LLMClient, configProvider AgentConfigProvider, opt
 	return exec, nil
 }
 
-// Execute fulfills the Executor interface.
-// It executes a deterministic bounded loop:
-//  1. Loads exact pinned version configuration.
-//  2. Initializes prompt, context, budgets, and repeated-call trackers.
-//  3. Invokes the LLM and parses the response into a tool call, escalation, or decision.
-//  4. If tool requested, verifies authorization in cfg.Tools, executes via ToolGateway, and updates context.
-//  5. If escalation, returns structured escalation outcome.
-//  6. If decision, validates against output schema, consults ReliabilityService (if gated/configured), and returns decision.
+// Execute runs the agent against the provided input payload. It enforces execution budgets,
+// dispatches authorized tool calls through the ToolGateway, and validates structured outputs.
 func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (ExecutionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ExecutionResult{}, err
@@ -130,7 +124,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		return ExecutionResult{}, err
 	}
 
-	// 1. Retrieve exact pinned agent version configuration
+	// Fetch pinned version configuration and validate
 	cfg, err := e.configProvider.GetAgentConfig(ctx, input.TenantID, input.AgentID, input.AgentVersionID)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -142,12 +136,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		return ExecutionResult{}, fmt.Errorf("%w: %v", ErrConfigurationNotFound, err)
 	}
 
-	// 2. Validate configuration integrity
 	if err := domain.ValidateConfiguration(cfg); err != nil {
 		return ExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidConfiguration, err)
 	}
 
-	// 3. Extract and validate execution budgets
+	// Determine token and iteration budgets
 	budget, err := ExtractBudgetConfig(cfg)
 	if err != nil {
 		return ExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidConfiguration, err)
@@ -159,7 +152,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		budget = *e.budgetConfig
 	}
 
-	// 4. Validate output schema early (if configured) so invalid schemas fail closed before running
+	// Validate output schema early so misconfigured agents fail fast
 	outputSchema := e.extractOutputSchema(cfg)
 	var compiledSchema *jsonschema.Schema
 	if outputSchema != nil {
@@ -170,7 +163,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		compiledSchema = cs
 	}
 
-	// 5. Build initial prompt from template and input payload
+	// Render prompt template with input payload
 	builder := e.promptBuilder
 	if builder == nil {
 		builder = NewPromptBuilder()
@@ -180,13 +173,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		return ExecutionResult{}, fmt.Errorf("failed to build prompt: %w", err)
 	}
 
-	// 6. Setup allowed tools set from pinned agent configuration
 	allowedTools := make(map[string]bool, len(cfg.Tools))
 	for _, t := range cfg.Tools {
 		allowedTools[strings.TrimSpace(t)] = true
 	}
 
-	// 7. Initialize loop state, tracker, and context
 	tracker := NewBudgetTracker(budget)
 	currentPrompt := prompt
 	var previousToolFingerprint string

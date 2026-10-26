@@ -17,6 +17,15 @@ import (
 // ProviderOpenAI is the canonical provider identifier for OpenAI.
 const ProviderOpenAI = "openai"
 
+// ProviderGroq is the canonical provider identifier for Groq Cloud.
+const ProviderGroq = "groq"
+
+// ProviderOpenRouter is the canonical provider identifier for OpenRouter.
+const ProviderOpenRouter = "openrouter"
+
+// ProviderGrok is the canonical provider identifier for xAI Grok.
+const ProviderGrok = "grok"
+
 // DefaultOpenAIModels lists standard OpenAI models supported by the adapter.
 var DefaultOpenAIModels = []string{
 	"gpt-4o",
@@ -28,6 +37,38 @@ var DefaultOpenAIModels = []string{
 	"o1-mini",
 	"o1-preview",
 	"o3-mini",
+}
+
+// DefaultGroqModels lists common Groq-hosted open source models.
+var DefaultGroqModels = []string{
+	"llama-3.3-70b-versatile",
+	"llama-3.1-8b-instant",
+	"llama-3.1-70b-versatile",
+	"llama-guard-3-8b",
+	"llama3-70b-8192",
+	"llama3-8b-8192",
+	"mixtral-8x7b-32768",
+	"gemma2-9b-it",
+}
+
+// DefaultOpenRouterModels lists popular multi-provider models on OpenRouter.
+var DefaultOpenRouterModels = []string{
+	"anthropic/claude-3.5-sonnet",
+	"meta-llama/llama-3.3-70b-instruct",
+	"openai/gpt-4o",
+	"openai/gpt-4o-mini",
+	"google/gemini-pro-1.5",
+	"deepseek/deepseek-chat",
+}
+
+// DefaultGrokModels lists common xAI Grok models.
+var DefaultGrokModels = []string{
+	"grok-2",
+	"grok-2-1212",
+	"grok-2-mini",
+	"grok-2-vision-1212",
+	"grok-beta",
+	"grok-vision-beta",
 }
 
 // HTTPDoer defines the minimal interface for dispatching HTTP requests.
@@ -67,8 +108,9 @@ func WithOpenAITimeout(timeout time.Duration) OpenAIOption {
 	}
 }
 
-// OpenAIAdapter implements ProviderAdapter for OpenAI's Chat Completions API.
+// OpenAIAdapter implements ProviderAdapter for OpenAI and OpenAI-compatible Chat Completions APIs (e.g. Groq).
 type OpenAIAdapter struct {
+	providerID      string
 	baseURL         string
 	httpClient      HTTPDoer
 	timeout         time.Duration
@@ -78,8 +120,9 @@ type OpenAIAdapter struct {
 // NewOpenAIAdapter creates a new OpenAIAdapter instance with safe defaults.
 func NewOpenAIAdapter(opts ...OpenAIOption) *OpenAIAdapter {
 	adapter := &OpenAIAdapter{
-		baseURL: "https://api.openai.com/v1",
-		timeout: 30 * time.Second,
+		providerID: ProviderOpenAI,
+		baseURL:    "https://api.openai.com/v1",
+		timeout:    30 * time.Second,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -102,7 +145,97 @@ func NewOpenAIAdapter(opts ...OpenAIOption) *OpenAIAdapter {
 	return adapter
 }
 
+// NewGroqAdapter creates a new ProviderAdapter preconfigured for Groq Cloud.
+// It leverages Groq's high-speed OpenAI-compatible API at https://api.groq.com/openai/v1.
+func NewGroqAdapter(opts ...OpenAIOption) *OpenAIAdapter {
+	adapter := &OpenAIAdapter{
+		providerID: ProviderGroq,
+		baseURL:    "https://api.groq.com/openai/v1",
+		timeout:    30 * time.Second,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        50,
+				IdleConnTimeout:     90 * time.Second,
+				TLSHandshakeTimeout: 5 * time.Second,
+			},
+		},
+		supportedModels: make(map[string]struct{}),
+	}
+
+	for _, m := range DefaultGroqModels {
+		adapter.supportedModels[m] = struct{}{}
+	}
+
+	for _, opt := range opts {
+		opt(adapter)
+	}
+
+	return adapter
+}
+
+// NewOpenRouterAdapter creates a new ProviderAdapter preconfigured for OpenRouter.
+// OpenRouter provides a unified OpenAI-compatible endpoint routing to hundreds of LLMs.
+func NewOpenRouterAdapter(opts ...OpenAIOption) *OpenAIAdapter {
+	adapter := &OpenAIAdapter{
+		providerID: ProviderOpenRouter,
+		baseURL:    "https://openrouter.ai/api/v1",
+		timeout:    30 * time.Second,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        50,
+				IdleConnTimeout:     90 * time.Second,
+				TLSHandshakeTimeout: 5 * time.Second,
+			},
+		},
+		supportedModels: make(map[string]struct{}),
+	}
+
+	for _, m := range DefaultOpenRouterModels {
+		adapter.supportedModels[m] = struct{}{}
+	}
+
+	for _, opt := range opts {
+		opt(adapter)
+	}
+
+	return adapter
+}
+
+// NewGrokAdapter creates a new ProviderAdapter preconfigured for xAI Grok.
+// It leverages xAI's high-speed OpenAI-compatible API at https://api.x.ai/v1.
+func NewGrokAdapter(opts ...OpenAIOption) *OpenAIAdapter {
+	adapter := &OpenAIAdapter{
+		providerID: ProviderGrok,
+		baseURL:    "https://api.x.ai/v1",
+		timeout:    30 * time.Second,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        50,
+				IdleConnTimeout:     90 * time.Second,
+				TLSHandshakeTimeout: 5 * time.Second,
+			},
+		},
+		supportedModels: make(map[string]struct{}),
+	}
+
+	for _, m := range DefaultGrokModels {
+		adapter.supportedModels[m] = struct{}{}
+	}
+
+	for _, opt := range opts {
+		opt(adapter)
+	}
+
+	return adapter
+}
+
 func (a *OpenAIAdapter) ProviderID() string {
+	if a.providerID != "" {
+		return a.providerID
+	}
 	return ProviderOpenAI
 }
 
@@ -118,17 +251,34 @@ func (a *OpenAIAdapter) SupportedModels() []string {
 func (a *OpenAIAdapter) IsModelSupported(model string) bool {
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
-		return true // defaults to gpt-4o
+		return true // defaults to provider default model
 	}
 	if _, ok := a.supportedModels[trimmed]; ok {
 		return true
 	}
-	// Also accept versioned or standard OpenAI prefix models
 	lower := strings.ToLower(trimmed)
-	if strings.HasPrefix(lower, "gpt-") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") {
+	switch a.ProviderID() {
+	case ProviderOpenRouter:
+		// OpenRouter dynamically routes to all provider models (e.g. "anthropic/claude-3.5-sonnet")
 		return true
+	case ProviderGrok:
+		if strings.HasPrefix(lower, "grok") {
+			return true
+		}
+		return false
+	case ProviderGroq:
+		// Accept common open-source model families available on Groq
+		if strings.HasPrefix(lower, "llama") || strings.HasPrefix(lower, "mixtral") || strings.HasPrefix(lower, "gemma") || strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "deepseek") {
+			return true
+		}
+		return false
+	default:
+		// Also accept versioned or standard OpenAI prefix models
+		if strings.HasPrefix(lower, "gpt-") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") {
+			return true
+		}
+		return false
 	}
-	return false
 }
 
 type openAIChatMessage struct {
@@ -188,15 +338,24 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 
 	cleanKey := strings.TrimSpace(apiKey)
 	if cleanKey == "" {
-		return LLMResponse{}, NewPermanentError("missing required API key for OpenAI provider", ErrMissingCredential)
+		return LLMResponse{}, NewPermanentError(fmt.Sprintf("missing required API key for %s provider", a.ProviderID()), ErrMissingCredential)
 	}
 
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
-		model = "gpt-4o"
+		switch a.ProviderID() {
+		case ProviderGroq:
+			model = "llama-3.3-70b-versatile"
+		case ProviderOpenRouter:
+			model = "anthropic/claude-3.5-sonnet"
+		case ProviderGrok:
+			model = "grok-2"
+		default:
+			model = "gpt-4o"
+		}
 	}
 	if !a.IsModelSupported(model) {
-		return LLMResponse{}, fmt.Errorf("%w: unsupported openai model %q", ErrUnsupportedModel, model)
+		return LLMResponse{}, fmt.Errorf("%w: unsupported %s model %q", ErrUnsupportedModel, a.ProviderID(), model)
 	}
 
 	chatReq := openAIChatRequest{
@@ -232,7 +391,7 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 				chatReq.Stop = req.Parameters.Stop
 			}
 		} else {
-			// Standard chat models (e.g. gpt-4o, gpt-4-turbo, gpt-3.5-turbo)
+			// Standard chat models (e.g. gpt-4o, gpt-4-turbo, gpt-3.5-turbo, Groq llama/mixtral)
 			if req.Parameters.Temperature != nil {
 				if *req.Parameters.Temperature < 0.0 || *req.Parameters.Temperature > 2.0 {
 					return LLMResponse{}, NewPermanentError("temperature must be between 0.0 and 2.0", ErrPermanent)
@@ -259,7 +418,7 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 
 	bodyBytes, err := json.Marshal(chatReq)
 	if err != nil {
-		return LLMResponse{}, fmt.Errorf("%w: failed to marshal openai request: %v", ErrPermanent, err)
+		return LLMResponse{}, fmt.Errorf("%w: failed to marshal %s request: %v", ErrPermanent, a.ProviderID(), err)
 	}
 
 	reqCtx := ctx
@@ -272,11 +431,15 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 	endpoint := a.baseURL + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return LLMResponse{}, fmt.Errorf("%w: failed to create openai http request: %v", ErrPermanent, err)
+		return LLMResponse{}, fmt.Errorf("%w: failed to create %s http request: %v", ErrPermanent, a.ProviderID(), err)
 	}
 
 	httpReq.Header.Set("Authorization", "Bearer "+cleanKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	if a.ProviderID() == ProviderOpenRouter {
+		httpReq.Header.Set("HTTP-Referer", "https://arda.dev")
+		httpReq.Header.Set("X-Title", "ARDA Platform")
+	}
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
@@ -287,13 +450,13 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 			return LLMResponse{}, context.DeadlineExceeded
 		}
 		safeErr := redactString(err.Error(), cleanKey)
-		return LLMResponse{}, NewTransientError(fmt.Sprintf("openai request failed due to connection error: %s", safeErr), ErrTransient)
+		return LLMResponse{}, NewTransientError(fmt.Sprintf("%s request failed due to connection error: %s", a.ProviderID(), safeErr), ErrTransient)
 	}
 	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024)) // 1MB limit
 	if err != nil {
-		return LLMResponse{}, NewTransientError("failed to read openai response body", ErrTransient)
+		return LLMResponse{}, NewTransientError(fmt.Sprintf("failed to read %s response body", a.ProviderID()), ErrTransient)
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -303,13 +466,13 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 	switch resp.StatusCode {
 	case http.StatusOK:
 		if !strings.Contains(strings.ToLower(contentType), "application/json") {
-			return LLMResponse{}, NewTransientError(fmt.Sprintf("unexpected content-type from openai: %q", contentType), ErrTransient)
+			return LLMResponse{}, NewTransientError(fmt.Sprintf("unexpected content-type from %s: %q", a.ProviderID(), contentType), ErrTransient)
 		}
 		if unmarshalErr != nil {
-			return LLMResponse{}, NewTransientError(fmt.Sprintf("failed to parse openai json response: %v", unmarshalErr), ErrTransient)
+			return LLMResponse{}, NewTransientError(fmt.Sprintf("failed to parse %s json response: %v", a.ProviderID(), unmarshalErr), ErrTransient)
 		}
 		if len(chatResp.Choices) == 0 {
-			return LLMResponse{}, NewPermanentError("openai returned response with no choices", ErrPermanent)
+			return LLMResponse{}, NewPermanentError(fmt.Sprintf("%s returned response with no choices", a.ProviderID()), ErrPermanent)
 		}
 
 		llmResp := LLMResponse{
@@ -324,36 +487,36 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 		return llmResp, nil
 
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return LLMResponse{}, NewPermanentError("openai authentication failed: invalid or unauthorized api key", ErrPermanent)
+		return LLMResponse{}, NewPermanentError(fmt.Sprintf("%s authentication failed: invalid or unauthorized api key", a.ProviderID()), ErrPermanent)
 
 	case http.StatusTooManyRequests:
-		return LLMResponse{}, NewTransientError("openai rate limit exceeded", ErrTransient)
+		return LLMResponse{}, NewTransientError(fmt.Sprintf("%s rate limit exceeded", a.ProviderID()), ErrTransient)
 
 	case http.StatusBadRequest:
 		errMsg := "bad request"
 		if chatResp.Error != nil && chatResp.Error.Message != "" {
 			errMsg = sanitizeErrorMessage(chatResp.Error.Message, cleanKey)
 		}
-		return LLMResponse{}, NewPermanentError(fmt.Sprintf("openai rejected request (HTTP 400): %s", errMsg), ErrPermanent)
+		return LLMResponse{}, NewPermanentError(fmt.Sprintf("%s rejected request (HTTP 400): %s", a.ProviderID(), errMsg), ErrPermanent)
 
 	default:
 		if resp.StatusCode >= 500 {
-			return LLMResponse{}, NewTransientError(fmt.Sprintf("openai upstream service error (HTTP %d)", resp.StatusCode), ErrTransient)
+			return LLMResponse{}, NewTransientError(fmt.Sprintf("%s upstream service error (HTTP %d)", a.ProviderID(), resp.StatusCode), ErrTransient)
 		}
-		return LLMResponse{}, NewPermanentError(fmt.Sprintf("openai request failed with HTTP %d", resp.StatusCode), ErrPermanent)
+		return LLMResponse{}, NewPermanentError(fmt.Sprintf("%s request failed with HTTP %d", a.ProviderID(), resp.StatusCode), ErrPermanent)
 	}
 }
 
 // sanitizeErrorMessage strips any sensitive credential strings from upstream error messages.
 func sanitizeErrorMessage(msg string, apiKey string) string {
 	cleaned := redactString(msg, apiKey)
-	if strings.Contains(cleaned, "sk-") {
-		return "openai request validation error"
+	if strings.Contains(cleaned, "sk-") || strings.Contains(cleaned, "gsk_") || strings.Contains(cleaned, "xai-") {
+		return "request validation error"
 	}
 	return cleaned
 }
 
-var tokenPattern = regexp.MustCompile(`(sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]+)`)
+var tokenPattern = regexp.MustCompile(`(sk-ant-[A-Za-z0-9_-]{8,}|sk-or-v1-[A-Za-z0-9_-]{8,}|xai-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|gsk_[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{30,}|Bearer\s+[A-Za-z0-9._-]+)`)
 
 // redactString redacts known secrets and token patterns from messages.
 func redactString(str string, secret string) string {

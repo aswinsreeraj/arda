@@ -63,24 +63,37 @@ func main() {
 	log.Printf("  Task Queue:       %s", cfg.TaskQueue)
 	log.Printf("  Registry Address: %s", *registryAddrFlag)
 
-	// 1. Connect to Agent Registry gRPC service for configuration retrieval
+	// Agent Registry gRPC connection
 	regProxyClient, err := proxy.NewRegistryClient(*registryAddrFlag)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to connect to Agent Registry gRPC at %s: %v", *registryAddrFlag, err)
 	}
 	defer regProxyClient.Close()
 
-	// 2. Initialize Registry configuration provider for exact pinned version retrieval
 	configProvider, err := agentruntime.NewRegistryConfigProvider(regProxyClient.Client())
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize registry configuration provider: %v", err)
 	}
 
-	// 3. Initialize Provider Registry and register available adapters
+	// Supported LLM provider adapters
 	providerRegistry := agentruntime.NewProviderRegistry()
-	openAIAdapter := agentruntime.NewOpenAIAdapter()
-	if err := providerRegistry.Register(openAIAdapter); err != nil {
+	if err := providerRegistry.RegisterWithAliases(agentruntime.NewOpenAIAdapter(), "gpt"); err != nil {
 		log.Fatalf("FATAL: Failed to register OpenAI provider adapter: %v", err)
+	}
+	if err := providerRegistry.RegisterWithAliases(agentruntime.NewAnthropicAdapter(), "claude"); err != nil {
+		log.Fatalf("FATAL: Failed to register Anthropic provider adapter: %v", err)
+	}
+	if err := providerRegistry.RegisterWithAliases(agentruntime.NewGeminiAdapter(), "gemini"); err != nil {
+		log.Fatalf("FATAL: Failed to register Google Gemini provider adapter: %v", err)
+	}
+	if err := providerRegistry.RegisterWithAliases(agentruntime.NewGroqAdapter(), "groqcloud"); err != nil {
+		log.Fatalf("FATAL: Failed to register Groq provider adapter: %v", err)
+	}
+	if err := providerRegistry.RegisterWithAliases(agentruntime.NewGrokAdapter(), "xai"); err != nil {
+		log.Fatalf("FATAL: Failed to register Grok provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(agentruntime.NewOpenRouterAdapter()); err != nil {
+		log.Fatalf("FATAL: Failed to register OpenRouter provider adapter: %v", err)
 	}
 
 	allowMockLLM := *devMockLLMFlag || strings.EqualFold(os.Getenv("ARDA_DEV_MOCK_LLM"), "true")
@@ -92,7 +105,7 @@ func main() {
 		}
 	}
 
-	// 4. Initialize Vault client and Tenant Credential Resolver for BYOK
+	// Tenant BYOK credential resolution via HashiCorp Vault
 	vaultCfg := vault.ConfigFromEnv()
 	var credResolver agentruntime.CredentialResolver
 
@@ -114,7 +127,6 @@ func main() {
 		log.Fatal("FATAL: Vault configuration (VAULT_ADDR and VAULT_TOKEN) is required for production BYOK credential resolution. Refusing to run in production without secret storage. Set ARDA_DEV_MOCK_LLM=true for local mock testing.")
 	}
 
-	// 5. Initialize ResolvingLLMClient with dynamic provider routing and BYOK credentials
 	defaultProvider := "openai"
 	if allowMockLLM && (vaultCfg.Address == "" || vaultCfg.Token == "") {
 		defaultProvider = "mock"
@@ -129,7 +141,6 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize dynamic resolving LLM client: %v", err)
 	}
 
-	// 6. Construct LLMExecutor and wrap with AgentRuntime
 	executor, err := agentruntime.NewLLMExecutor(
 		resolvingClient,
 		configProvider,
@@ -145,7 +156,6 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize agent runtime: %v", err)
 	}
 
-	// 5. Initialize Temporal Worker with real AgentRuntime
 	w, err := temporal.NewWorker(cfg, nil, temporal.WithAgentRuntime(rt))
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize Temporal worker: %v", err)

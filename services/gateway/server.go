@@ -20,6 +20,7 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
+	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/aswinsreeraj/arda/services/registry/service"
 	"github.com/aswinsreeraj/arda/services/registry/store"
@@ -196,6 +197,20 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		execClient = ec
 	}
 
+	// Initialize Tool Registry and Governance Service
+	var toolStore toolgateway.Store
+	if db != nil {
+		if gs, err := toolgateway.NewGormStore(db); err == nil {
+			toolStore = gs
+		} else {
+			toolStore = toolgateway.NewMemoryStore()
+		}
+	} else {
+		toolStore = toolgateway.NewMemoryStore()
+	}
+	toolRegistry := toolgateway.NewRegistry(toolStore)
+	toolsHandler := gatewayhttp.NewToolsHandler(toolRegistry, toolStore, gatewayhttp.WriteErrorResponse)
+
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
@@ -205,6 +220,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		TemporalClient:     tempClient,
 		CredentialHandler:  credHandler,
 		IdentityHandler:    identHandler,
+		ToolsHandler:       toolsHandler,
 	})
 
 	return &Server{

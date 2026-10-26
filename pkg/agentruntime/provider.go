@@ -86,6 +86,25 @@ type ProviderRegistry struct {
 	adapters map[string]ProviderAdapter
 }
 
+// NormalizeProviderID maps common aliases to canonical provider identifiers.
+func NormalizeProviderID(provider string) string {
+	lower := strings.ToLower(strings.TrimSpace(provider))
+	switch lower {
+	case "claude":
+		return "anthropic"
+	case "gemini":
+		return "google"
+	case "gpt":
+		return "openai"
+	case "xai":
+		return "grok"
+	case "groqcloud":
+		return "groq"
+	default:
+		return lower
+	}
+}
+
 // NewProviderRegistry creates a new, empty ProviderRegistry.
 func NewProviderRegistry() *ProviderRegistry {
 	return &ProviderRegistry{
@@ -112,7 +131,23 @@ func (r *ProviderRegistry) Register(adapter ProviderAdapter) error {
 	return nil
 }
 
-// GetAdapter retrieves the adapter registered for the specified provider ID.
+// RegisterWithAliases registers an adapter under its ProviderID and one or more alias identifiers.
+func (r *ProviderRegistry) RegisterWithAliases(adapter ProviderAdapter, aliases ...string) error {
+	if err := r.Register(adapter); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, alias := range aliases {
+		cleanAlias := strings.ToLower(strings.TrimSpace(alias))
+		if cleanAlias != "" && !strings.ContainsAny(cleanAlias, "/\\#?&% :") {
+			r.adapters[cleanAlias] = adapter
+		}
+	}
+	return nil
+}
+
+// GetAdapter retrieves the adapter registered for the specified provider ID or alias.
 func (r *ProviderRegistry) GetAdapter(provider string) (ProviderAdapter, error) {
 	cleanID := strings.ToLower(strings.TrimSpace(provider))
 	r.mu.RLock()
@@ -120,17 +155,25 @@ func (r *ProviderRegistry) GetAdapter(provider string) (ProviderAdapter, error) 
 
 	adapter, ok := r.adapters[cleanID]
 	if !ok {
+		// Fallback to canonical provider identifier if aliased
+		norm := NormalizeProviderID(cleanID)
+		adapter, ok = r.adapters[norm]
+	}
+	if !ok {
 		return nil, fmt.Errorf("%w: provider %q is not registered", ErrUnsupportedProvider, cleanID)
 	}
 	return adapter, nil
 }
 
-// HasProvider checks whether an adapter is registered for the specified provider.
+// HasProvider checks whether an adapter is registered for the specified provider ID or alias.
 func (r *ProviderRegistry) HasProvider(provider string) bool {
 	cleanID := strings.ToLower(strings.TrimSpace(provider))
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, ok := r.adapters[cleanID]
+	if _, ok := r.adapters[cleanID]; ok {
+		return true
+	}
+	_, ok := r.adapters[NormalizeProviderID(cleanID)]
 	return ok
 }
 
@@ -195,13 +238,8 @@ func NewResolvingLLMClient(
 	return c, nil
 }
 
-// Generate dynamically routes an LLMRequest:
-//  1. Selects provider adapter (agent config -> default provider -> error).
-//  2. Validates provider and model support.
-//  3. Resolves tenant-scoped credentials via CredentialResolver (unless provider is "mock").
-//  4. Dispatches text generation to the selected adapter.
-//
-// Fails closed if provider is unknown, model unsupported, or credentials cannot be resolved.
+// Generate routes an LLMRequest to the appropriate provider adapter.
+// It resolves credentials from Vault when necessary and verifies model compatibility.
 func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return LLMResponse{}, err
@@ -210,7 +248,6 @@ func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMR
 		return LLMResponse{}, err
 	}
 
-	// 1. Resolve provider identifier
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
 	if provider == "" {
 		provider = c.defaultProvider
@@ -219,13 +256,11 @@ func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMR
 		return LLMResponse{}, fmt.Errorf("%w: provider is not specified and no default provider is configured", ErrMissingProvider)
 	}
 
-	// 2. Look up provider adapter
 	adapter, err := c.registry.GetAdapter(provider)
 	if err != nil {
 		return LLMResponse{}, err
 	}
 
-	// 3. Resolve and validate model
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = c.defaultModel
@@ -235,7 +270,6 @@ func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMR
 	}
 	req.Model = model
 
-	// 4. Resolve credentials for provider if required
 	var apiKey string
 	if provider != "mock" {
 		if c.credentialResolver == nil {
@@ -247,12 +281,15 @@ func (c *ResolvingLLMClient) Generate(ctx context.Context, req LLMRequest) (LLMR
 
 		var err error
 		apiKey, err = c.credentialResolver.ResolveCredential(ctx, req.TenantID, provider, req.CredentialRef)
+		if err != nil && NormalizeProviderID(provider) != provider {
+			// Fall back to canonical provider name if alias lookup missed
+			apiKey, err = c.credentialResolver.ResolveCredential(ctx, req.TenantID, NormalizeProviderID(provider), req.CredentialRef)
+		}
 		if err != nil {
 			return LLMResponse{}, err
 		}
 	}
 
-	// 5. Invoke the selected provider adapter directly with explicit credential parameter
 	resp, err := adapter.GenerateWithCredential(ctx, apiKey, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {

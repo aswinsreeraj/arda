@@ -140,17 +140,14 @@ func GenerateWorkflowID(agentID uuid.UUID, executionID string) string {
 // exists and belongs to the authorized tenant, preserves exact version pinning, and dispatches the execution
 // workflow to Temporal.
 func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, req SubmitExecutionRequest) (*SubmitExecutionResponse, error) {
-	// 1. Authenticate identity from trusted context
 	if identity.TenantID == uuid.Nil {
 		return nil, NewUnauthenticatedError("unauthenticated caller: missing tenant identity in context")
 	}
 
-	// 2. Authorize role for agent execution
 	if err := auth.Authorize(identity, auth.ActionAgentExecute); err != nil {
 		return nil, NewForbiddenError(err.Error())
 	}
 
-	// 3. Validate request parameters
 	if err := req.Validate(); err != nil {
 		var execErr *ExecutionError
 		if errors.As(err, &execErr) {
@@ -159,7 +156,7 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		return nil, NewValidationError(err.Error())
 	}
 
-	// 4. Verify that the exact agent version exists and belongs to the authorized tenant and agent
+	// Verify target agent version belongs to authorized tenant
 	ver, err := s.registry.GetAgentVersion(ctx, identity.TenantID, req.AgentID, req.AgentVersionID)
 	if err != nil {
 		var domErr *domain.DomainError
@@ -198,7 +195,6 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		return nil, NewNotFoundError("agent version does not belong to the specified agent")
 	}
 
-	// Determine effective execution mode
 	execMode := req.ExecutionMode
 	if execMode == "" {
 		if ver.Configuration.ExecutionMode != "" {
@@ -208,18 +204,16 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		}
 	}
 
-	// 5. Construct collision-safe workflow ID
 	workflowID := GenerateWorkflowID(req.AgentID, req.ExecutionID)
 
-	// 6. Assemble Temporal workflow input with exact version pinning
+	// Pin execution strictly to the validated version ID
 	wfInput := temporal.AgentExecutionInput{
 		TenantID:       identity.TenantID,
 		AgentID:        req.AgentID,
-		AgentVersionID: req.AgentVersionID, // Preserves exact pinned version; never substitutes latest
+		AgentVersionID: req.AgentVersionID,
 		ExecutionInput: req.Input,
 	}
 
-	// 7. Dispatch workflow to Temporal
 	run, err := s.dispatcher.StartAgentExecutionWorkflow(ctx, workflowID, wfInput)
 	if err != nil {
 		if strings.Contains(err.Error(), "WorkflowExecutionAlreadyStarted") ||
