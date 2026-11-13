@@ -73,6 +73,7 @@ type Server struct {
 	inProcessGRPC       *registrygrpc.Server
 	inProcessReviewGRPC *reviewgrpc.Server
 	OutboxRelay         *reviewevents.OutboxRelay
+	outboxCancel        context.CancelFunc
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
@@ -365,6 +366,13 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		ReviewClient:       grpcReviewClient,
 	})
 
+	var outboxCancel context.CancelFunc
+	if outboxRelay != nil {
+		relayCtx, cancel := context.WithCancel(context.Background())
+		outboxCancel = cancel
+		go outboxRelay.Start(relayCtx)
+	}
+
 	return &Server{
 		Handler:             gwHandler,
 		JWTValidator:        jwtValidator,
@@ -379,11 +387,15 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		inProcessGRPC:       inProcessGRPC,
 		inProcessReviewGRPC: inProcessReviewGRPC,
 		OutboxRelay:         outboxRelay,
+		outboxCancel:        outboxCancel,
 	}, nil
 }
 
 // Close closes all client connections and cleans up background resources.
 func (s *Server) Close() error {
+	if s.outboxCancel != nil {
+		s.outboxCancel()
+	}
 	if s.RegistryClient != nil {
 		_ = s.RegistryClient.Close()
 	}

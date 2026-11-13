@@ -182,6 +182,7 @@ func handleGetReview(c *gin.Context, client ardav1.ReviewServiceClient) {
 	}
 
 	result := map[string]any{
+		"id":                    rc.GetId(),
 		"case_id":               rc.GetId(),
 		"tenant_id":             rc.GetTenantId(),
 		"execution_id":          rc.GetExecutionId(),
