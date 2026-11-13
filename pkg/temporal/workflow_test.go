@@ -436,6 +436,16 @@ func TestAgentExecutionWorkflow_EscalationResult(t *testing.T) {
 		ExecutionInput: map[string]any{"amount": 100000},
 	}
 
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(temporal.HumanReviewSignalName, temporal.HumanResolutionSignalPayload{
+			CaseID:           "case_esc_1",
+			Decision:         "approve",
+			FinalDecision:    "APPROVE",
+			ResolutionReason: "Requires human authorization",
+			ReviewerID:       "compliance_officer",
+		})
+	}, 10)
+
 	env.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
 
 	if !env.IsWorkflowCompleted() {
@@ -450,8 +460,8 @@ func TestAgentExecutionWorkflow_EscalationResult(t *testing.T) {
 		t.Fatalf("failed to decode workflow result: %v", err)
 	}
 
-	if result.Status != "ESCALATED" {
-		t.Errorf("expected status ESCALATED, got %s", result.Status)
+	if result.Status != "RESOLVED" {
+		t.Errorf("expected status RESOLVED, got %s", result.Status)
 	}
 	if result.Reason != "Requires human authorization" {
 		t.Errorf("expected reason 'Requires human authorization', got %s", result.Reason)
@@ -755,6 +765,16 @@ func TestAgentExecutionWorkflow_EscalationOutcome(t *testing.T) {
 		AgentVersionID: versionID,
 	}
 
+	wfEnv.RegisterDelayedCallback(func() {
+		wfEnv.SignalWorkflow(temporal.HumanReviewSignalName, temporal.HumanResolutionSignalPayload{
+			CaseID:           "case_esc_2",
+			Decision:         "approve",
+			FinalDecision:    "APPROVE",
+			ResolutionReason: "Supervisory review approved",
+			ReviewerID:       "supervisor_bob",
+		})
+	}, 10)
+
 	wfEnv.ExecuteWorkflow(temporal.AgentExecutionWorkflow, input)
 
 	if !wfEnv.IsWorkflowCompleted() {
@@ -769,8 +789,8 @@ func TestAgentExecutionWorkflow_EscalationOutcome(t *testing.T) {
 		t.Fatalf("failed to decode result: %v", err)
 	}
 
-	if res.Status != "ESCALATED" {
-		t.Errorf("expected status ESCALATED, got %s", res.Status)
+	if res.Status != "RESOLVED" {
+		t.Errorf("expected status RESOLVED, got %s", res.Status)
 	}
 	if res.Escalation == nil || res.Escalation.Target != "compliance_officer" {
 		t.Errorf("unexpected escalation: %+v", res.Escalation)

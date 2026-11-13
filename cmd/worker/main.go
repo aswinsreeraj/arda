@@ -9,9 +9,14 @@ import (
 	"syscall"
 
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
+	"github.com/aswinsreeraj/arda/pkg/database"
+	"github.com/aswinsreeraj/arda/pkg/mcp"
+	"github.com/aswinsreeraj/arda/pkg/mcp/simulator"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
+	"github.com/google/uuid"
 )
 
 func loadEnv(filepath string) {
@@ -141,11 +146,57 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize dynamic resolving LLM client: %v", err)
 	}
 
+	// Initialize Tool Registry & Audit Store for Tool Gateway
+	var toolStore toolgateway.Store
+	if db, err := database.Connect(database.LoadConfigFromEnv()); err == nil {
+		if gs, err := toolgateway.NewGormStore(db.DB); err == nil {
+			toolStore = gs
+		} else {
+			toolStore = toolgateway.NewMemoryStore()
+		}
+	} else {
+		toolStore = toolgateway.NewMemoryStore()
+	}
+	toolRegistry := toolgateway.NewRegistry(toolStore)
+
+	// Initialize MCP Connection Manager with local simulator fallback
+	mcpManager := mcp.NewConnectionManager(mcp.ManagerConfig{AllowLocalhost: true})
+	sim := simulator.NewTransactionSimulator(uuid.Nil)
+	_ = mcpManager.RegisterInProcessServer("mcp-tx-conn", uuid.Nil, sim.Server())
+
+	handlers := toolgateway.NewHandlerRegistry()
+	handlers.Register("mcp:mcp-tx-conn:get_transaction", mcp.NewToolHandler(mcpManager, "mcp-tx-conn", "get_transaction"))
+	handlers.Register("mcp:mcp-tx-conn:reverse_transaction", mcp.NewToolHandler(mcpManager, "mcp-tx-conn", "reverse_transaction"))
+	handlers.SetDynamicFallback(func(id string) toolgateway.ToolHandler {
+		if strings.HasPrefix(id, "mcp:") {
+			connID, toolName, ok := mcp.ParseHandlerID(id)
+			if ok {
+				return mcp.NewToolHandler(mcpManager, connID, toolName)
+			}
+		}
+		return nil
+	})
+
+	guardrail := toolgateway.NewCompositeGuardrail(
+		toolgateway.NewDestructiveOperationGuardrail(),
+		toolgateway.NewParameterBoundsGuardrail(5000.0),
+	)
+
+	toolGw := toolgateway.NewGateway(toolgateway.GatewayConfig{
+		Registry:        toolRegistry,
+		Store:           toolStore,
+		Guardrail:       guardrail,
+		HandlerRegistry: handlers,
+		AuditLogger:     toolgateway.NewStoreAuditLogger(toolStore),
+		ConfigProvider:  configProvider,
+	})
+
 	executor, err := agentruntime.NewLLMExecutor(
 		resolvingClient,
 		configProvider,
 		agentruntime.WithDefaultModel("gpt-4o"),
 		agentruntime.WithDefaultExecutorProvider(defaultProvider),
+		agentruntime.WithToolGateway(toolGw),
 	)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize LLM executor: %v", err)

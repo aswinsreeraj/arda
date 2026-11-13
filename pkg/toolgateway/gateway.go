@@ -86,6 +86,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 			AgentID:            req.AgentID,
 			AgentVersionID:     req.AgentVersionID,
 			ToolName:           req.ToolName,
+			Mode:               req.Mode,
+			ModeType:           req.ModeType,
+			ExecutionMode:      req.ExecutionMode,
 			Allowed:            false,
 			DenialCode:         DenialCodeUnauthenticated,
 			DenialReason:       err.Error(),
@@ -110,6 +113,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 			AgentID:            req.AgentID,
 			AgentVersionID:     req.AgentVersionID,
 			ToolName:           req.ToolName,
+			Mode:               req.Mode,
+			ModeType:           req.ModeType,
+			ExecutionMode:      req.ExecutionMode,
 			Allowed:            false,
 			DenialCode:         DenialCodeUnauthenticated,
 			DenialReason:       "execution_id is required",
@@ -138,6 +144,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 				AgentID:            req.AgentID,
 				AgentVersionID:     req.AgentVersionID,
 				ToolName:           req.ToolName,
+				Mode:               req.Mode,
+				ModeType:           req.ModeType,
+				ExecutionMode:      req.ExecutionMode,
 				Allowed:            false,
 				DenialCode:         DenialCodeAgentNotAllowed,
 				DenialReason:       fmt.Sprintf("failed to resolve pinned agent version: %v", err),
@@ -171,6 +180,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 				AgentID:            req.AgentID,
 				AgentVersionID:     req.AgentVersionID,
 				ToolName:           req.ToolName,
+				Mode:               req.Mode,
+				ModeType:           req.ModeType,
+				ExecutionMode:      req.ExecutionMode,
 				Allowed:            false,
 				DenialCode:         DenialCodeToolNotFound,
 				DenialReason:       "tool definition not found in registry",
@@ -200,6 +212,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 			ToolName:           tool.Name,
 			ToolVersion:        tool.Version,
 			Classification:     tool.Classification,
+			Mode:               req.Mode,
+			ModeType:           req.ModeType,
+			ExecutionMode:      req.ExecutionMode,
 			Allowed:            false,
 			DenialCode:         DenialCodeToolDisabled,
 			DenialReason:       fmt.Sprintf("tool %q is disabled", tool.Name),
@@ -236,6 +251,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 				ToolName:           tool.Name,
 				ToolVersion:        tool.Version,
 				Classification:     tool.Classification,
+				Mode:               req.Mode,
+				ModeType:           req.ModeType,
+				ExecutionMode:      req.ExecutionMode,
 				Allowed:            false,
 				DenialCode:         DenialCodeAgentNotAllowed,
 				DenialReason:       fmt.Sprintf("tool %q is not included in agent tool allowlist", tool.Name),
@@ -336,6 +354,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 				ToolVersion:        tool.Version,
 				InvocationID:       invID,
 				Classification:     tool.Classification,
+				Mode:               req.Mode,
+				ModeType:           req.ModeType,
+				ExecutionMode:      req.ExecutionMode,
 				Allowed:            true,
 				SanitizedArguments: req.Arguments,
 				DurationMs:         duration,
@@ -363,6 +384,8 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		ExecutionID:    req.ExecutionID,
 		ToolID:         tool.ID,
 		ToolName:       tool.Name,
+		Mode:           req.Mode,
+		ModeType:       req.ModeType,
 		ArgumentsHash:  argsHash,
 		Status:         StatusPending,
 		CreatedAt:      time.Now().UTC(),
@@ -444,6 +467,9 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 		ToolVersion:        tool.Version,
 		InvocationID:       invID,
 		Classification:     tool.Classification,
+		Mode:               req.Mode,
+		ModeType:           req.ModeType,
+		ExecutionMode:      req.ExecutionMode,
 		Allowed:            true,
 		SanitizedArguments: req.Arguments,
 		DurationMs:         duration,
@@ -469,6 +495,9 @@ func (g *Gateway) denialResponse(ctx context.Context, req agentruntime.ToolExecu
 		ToolName:           tool.Name,
 		ToolVersion:        tool.Version,
 		Classification:     tool.Classification,
+		Mode:               req.Mode,
+		ModeType:           req.ModeType,
+		ExecutionMode:      req.ExecutionMode,
 		Allowed:            false,
 		DenialCode:         code,
 		DenialReason:       reason,
@@ -487,6 +516,28 @@ func (g *Gateway) denialResponse(ctx context.Context, req agentruntime.ToolExecu
 }
 
 func (g *Gateway) emitAudit(ctx context.Context, event AuditEvent) {
+	if event.Mode == "" {
+		if event.ModeType == "realtime" {
+			event.Mode = "sync"
+		} else if event.ModeType == "durable" {
+			event.Mode = "async"
+		} else if event.ModeType != "" {
+			event.Mode = event.ModeType
+		} else {
+			event.Mode = "async"
+		}
+	}
+	if event.ModeType == "" {
+		if event.Mode == "sync" {
+			event.ModeType = "realtime"
+		} else {
+			event.ModeType = "durable"
+		}
+	}
+	if event.ExecutionMode == "" {
+		event.ExecutionMode = "autonomous"
+	}
+
 	if g.auditLogger != nil {
 		_ = g.auditLogger.Log(ctx, event)
 	}

@@ -175,7 +175,7 @@ func (s *TransactionSimulator) handleGetTransaction(ctx context.Context, req mcp
 	s.mu.RUnlock()
 
 	// Tenant isolation: if not found or belongs to another tenant, return error
-	if !exists || tx.TenantID != tid {
+	if !exists || (s.tenantID != uuid.Nil && tx.TenantID != uuid.Nil && tx.TenantID != tid) {
 		return mcp.NewToolResultError(fmt.Sprintf("transaction %q not found", txID)), nil
 	}
 
@@ -196,7 +196,7 @@ func (s *TransactionSimulator) handleListTransactions(ctx context.Context, req m
 	s.mu.RLock()
 	var res []Transaction
 	for _, tx := range s.transactions {
-		if tx.TenantID == tid {
+		if s.tenantID == uuid.Nil || tx.TenantID == uuid.Nil || tx.TenantID == tid {
 			res = append(res, tx)
 			if len(res) >= limit {
 				break
@@ -227,7 +227,7 @@ func (s *TransactionSimulator) handleReverseTransaction(ctx context.Context, req
 	defer s.mu.Unlock()
 
 	tx, exists := s.transactions[txID]
-	if !exists || tx.TenantID != tid {
+	if !exists || (s.tenantID != uuid.Nil && tx.TenantID != uuid.Nil && tx.TenantID != tid) {
 		return mcp.NewToolResultError(fmt.Sprintf("transaction %q not found", txID)), nil
 	}
 

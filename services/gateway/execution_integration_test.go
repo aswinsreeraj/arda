@@ -118,9 +118,20 @@ func TestGateway_ExecutionServiceIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("2. synchronous mode is rejected with 400 VALIDATION_FAILED", func(t *testing.T) {
+	t.Run("2. synchronous realtime mode returns 200 OK with direct result", func(t *testing.T) {
 		mockExecServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusAccepted)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id":         agentID.String(),
+				"agent_version_id": pinnedVersionID.String(),
+				"status":           "SUCCESS",
+				"mode":             "sync",
+				"structured_output": map[string]any{
+					"decision":   "APPROVE",
+					"confidence": 0.95,
+				},
+			})
 		}))
 		defer mockExecServer.Close()
 
@@ -142,13 +153,49 @@ func TestGateway_ExecutionServiceIntegration(t *testing.T) {
 		}
 
 		resp, body := doRequest(gwServer, "POST", fmt.Sprintf("/api/v1/agents/%s/execute", agentID), devToken, nil, payload)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("expected 400 Bad Request for mode: sync, got %d (body: %s)", resp.StatusCode, string(body))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for mode: sync, got %d (body: %s)", resp.StatusCode, string(body))
 		}
 
-		errResp := parseErrorResponse(t, body)
-		if errResp.Error.Code != "VALIDATION_FAILED" {
-			t.Errorf("expected VALIDATION_FAILED code, got %s", errResp.Error.Code)
+		var res struct {
+			Status           string         `json:"status"`
+			Mode             string         `json:"mode"`
+			StructuredOutput map[string]any `json:"structured_output"`
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if res.Status != "SUCCESS" || res.Mode != "sync" {
+			t.Errorf("expected SUCCESS sync result, got %+v", res)
+		}
+	})
+
+	t.Run("2b. invalid execution mode is rejected with 400 VALIDATION_FAILED", func(t *testing.T) {
+		mockExecServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		defer mockExecServer.Close()
+
+		execClient, _ := proxy.NewExecutionClient(mockExecServer.URL)
+		defer execClient.Close()
+
+		gw := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
+			JWTValidator:    val,
+			RateLimiter:     ratelimit.NewLimiter(ratelimit.Config{Enabled: false}),
+			ExecutionClient: execClient,
+		})
+		gwServer := httptest.NewServer(gw)
+		defer gwServer.Close()
+
+		payload := map[string]any{
+			"agent_version_id": pinnedVersionID.String(),
+			"mode":             "unsupported_mode",
+			"input":            map[string]any{"query": "calculate"},
+		}
+
+		resp, body := doRequest(gwServer, "POST", fmt.Sprintf("/api/v1/agents/%s/execute", agentID), devToken, nil, payload)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for unsupported mode, got %d (body: %s)", resp.StatusCode, string(body))
 		}
 	})
 

@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package arda.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "proto/arda/v1/common.proto";
+import "proto/arda/v1/reliability.proto";
+
+option go_package = "github.com/aswinsreeraj/arda/gen/go/arda/v1;ardav1";
+
+// ReviewService manages human-in-the-loop review cases, frozen evidence snapshots,
+// review queues, and resolution workflows.
+service ReviewService {
+  // CreateReviewCase registers an escalation and persists immutable frozen evidence.
+  rpc CreateReviewCase(CreateReviewCaseRequest) returns (CreateReviewCaseResponse);
+
+  // GetReviewCase retrieves complete details and frozen evidence for a specific review case.
+  rpc GetReviewCase(GetReviewCaseRequest) returns (GetReviewCaseResponse);
+
+  // ListReviewCases retrieves a tenant-scoped list of review cases.
+  rpc ListReviewCases(ListReviewCasesRequest) returns (ListReviewCasesResponse);
+
+  // ResolveReviewCase adjudicates an open review case and records the final decision.
+  rpc ResolveReviewCase(ResolveReviewCaseRequest) returns (ResolveReviewCaseResponse);
+}
+
+// ToolCallEvidence records the details of a tool invocation for evidence snapshotting.
+message ToolCallEvidence {
+  string tool_id = 1;
+  string tool_name = 2;
+  google.protobuf.Struct arguments = 3;
+  google.protobuf.Struct result = 4;
+  string output = 5;
+  string error = 6;
+  bool allowed = 7;
+  string denial_code = 8;
+  int64 duration_ms = 9;
+}
+
+// FrozenEvidence captures the immutable execution snapshot at the moment of escalation.
+message FrozenEvidence {
+  google.protobuf.Struct original_input = 1;
+  string agent_reasoning = 2;
+  string proposed_decision = 3;
+  double confidence = 4;
+  double reliability_threshold = 5;
+  repeated string escalation_reasons = 6;
+  repeated ReferenceNeighbor neighbors = 7;
+  repeated ToolCallEvidence tool_calls = 8;
+  map<string, string> metadata = 9;
+}
+
+// ReviewCase represents a persisted escalation case with frozen evidence and lifecycle state.
+message ReviewCase {
+  string id = 1;
+  string tenant_id = 2;
+  string execution_id = 3;
+  string agent_id = 4;
+  string agent_name = 5;
+  string agent_version_id = 6;
+  int32 agent_version_number = 7;
+  string execution_mode = 8;
+  string status = 9; // "OPEN", "RESOLVED"
+  string proposed_decision = 10;
+  double confidence = 11;
+  double reliability_threshold = 12;
+  repeated string escalation_reasons = 13;
+  FrozenEvidence frozen_evidence = 14;
+
+  // Resolution details (populated once resolved)
+  string decision = 15; // "approve", "reject", "override"
+  string final_decision = 16;
+  string resolution_reason = 17;
+  string reviewer_id = 18;
+  string audit_record_id = 19;
+  google.protobuf.Timestamp resolved_at = 20;
+
+  google.protobuf.Timestamp created_at = 21;
+  google.protobuf.Timestamp updated_at = 22;
+}
+
+// ReviewCaseSummary provides compact case metadata for list views and review queues.
+message ReviewCaseSummary {
+  string case_id = 1;
+  string execution_id = 2;
+  string agent_id = 3;
+  string agent_name = 4;
+  string proposed_decision = 5;
+  double confidence = 6;
+  repeated string escalation_reasons = 7;
+  string status = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message CreateReviewCaseRequest {
+  string tenant_id = 1;
+  string execution_id = 2;
+  string agent_id = 3;
+  string agent_name = 4;
+  string agent_version_id = 5;
+  int32 agent_version_number = 6;
+  string execution_mode = 7;
+  string proposed_decision = 8;
+  double confidence = 9;
+  double reliability_threshold = 10;
+  repeated string escalation_reasons = 11;
+  FrozenEvidence frozen_evidence = 12;
+  string case_id = 13; // Optional explicit case ID
+}
+
+message CreateReviewCaseResponse {
+  ReviewCase case = 1;
+}
+
+message GetReviewCaseRequest {
+  string tenant_id = 1;
+  string case_id = 2;
+}
+
+message GetReviewCaseResponse {
+  ReviewCase case = 1;
+}
+
+message ListReviewCasesRequest {
+  string tenant_id = 1;
+  string status = 2; // e.g. "OPEN", "RESOLVED"
+  string agent_id = 3;
+  string escalation_reason = 4;
+  PaginationRequest pagination = 5;
+}
+
+message ListReviewCasesResponse {
+  repeated ReviewCaseSummary cases = 1;
+  PaginationResponse pagination = 2;
+}
+
+message ResolveReviewCaseRequest {
+  string tenant_id = 1;
+  string case_id = 2;
+  string decision = 3; // "approve", "reject", "override"
+  string final_decision = 4;
+  string reason = 5;
+  string reviewer_id = 6;
+}
+
+message ResolveReviewCaseResponse {
+  string case_id = 1;
+  string status = 2; // "resolved"
+  string final_decision = 3;
+  string audit_record_id = 4;
+  google.protobuf.Timestamp resolved_at = 5;
+}

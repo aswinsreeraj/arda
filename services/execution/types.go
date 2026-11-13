@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
 	"github.com/google/uuid"
 )
@@ -34,11 +35,8 @@ func (r *SubmitExecutionRequest) Validate() error {
 
 	if r.Mode != "" {
 		normalizedMode := strings.ToLower(strings.TrimSpace(r.Mode))
-		if normalizedMode == "sync" {
-			return NewValidationError("synchronous execution mode is not supported; use 'async'")
-		}
-		if normalizedMode != "async" {
-			return NewValidationError(fmt.Sprintf("unsupported mode: %q; supported modes are: async", r.Mode))
+		if normalizedMode != "async" && normalizedMode != "sync" {
+			return NewValidationError(fmt.Sprintf("unsupported mode: %q; supported modes are: async, sync", r.Mode))
 		}
 		r.Mode = normalizedMode
 	} else {
@@ -56,15 +54,20 @@ func (r *SubmitExecutionRequest) Validate() error {
 	return nil
 }
 
-// SubmitExecutionResponse represents the response payload for an accepted execution submission.
+// SubmitExecutionResponse represents the response payload for an execution submission.
 type SubmitExecutionResponse struct {
-	WorkflowID     string               `json:"workflow_id"`
-	RunID          string               `json:"run_id"`
-	AgentID        uuid.UUID            `json:"agent_id"`
-	AgentVersionID uuid.UUID            `json:"agent_version_id"`
-	Status         string               `json:"status"` // "ACCEPTED"
-	ExecutionMode  domain.ExecutionMode `json:"execution_mode,omitempty"`
-	Mode           string               `json:"mode,omitempty"` // "async"
+	WorkflowID       string                       `json:"workflow_id,omitempty"`
+	RunID            string                       `json:"run_id,omitempty"`
+	AgentID          uuid.UUID                    `json:"agent_id"`
+	AgentVersionID   uuid.UUID                    `json:"agent_version_id"`
+	Status           string                       `json:"status"` // "ACCEPTED", "SUCCESS", "FAILED", "ESCALATED"
+	ExecutionMode    domain.ExecutionMode         `json:"execution_mode,omitempty"`
+	Mode             string                       `json:"mode,omitempty"` // "async" or "sync"
+	Output           map[string]any               `json:"output,omitempty"`
+	StructuredOutput any                          `json:"structured_output,omitempty"`
+	Reason           string                       `json:"reason,omitempty"`
+	Escalation       *agentruntime.EscalationInfo `json:"escalation,omitempty"`
+	DurationMs       int64                        `json:"duration_ms,omitempty"`
 }
 
 // ErrorCode defines standardized error codes for the execution service.

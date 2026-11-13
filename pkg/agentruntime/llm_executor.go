@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/aswinsreeraj/arda/pkg/jsonschema"
@@ -183,7 +184,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 	var previousToolFingerprint string
 	consecutiveRepeatedCount := 0
 	toolCallCounts := make(map[string]int)
-	executionID := uuid.New().String()
+	executionID := input.ExecutionID
+	if executionID == "" {
+		executionID = uuid.New().String()
+	}
 	reqCtx := vault.WithTenantID(ctx, input.TenantID)
 
 	for {
@@ -212,6 +216,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 			return ExecutionResult{}, fmt.Errorf("llm generation failed: %w", err)
 		}
 
+		log.Printf("[ARDA Runtime] LLM response (iteration=%d): %s", tracker.Iterations(), resp.Content)
+
 		if err := tracker.RecordUsage(resp.Usage); err != nil {
 			return ExecutionResult{}, NewPermanentError("token budget exceeded", err)
 		}
@@ -221,6 +227,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		}
 
 		actionType, toolCall, escalate, decisionPayload, _ := parseModelAction(resp.Content)
+		log.Printf("[ARDA Runtime] parsed actionType=%s", actionType)
 
 		switch actionType {
 		case "tool_call":
@@ -268,6 +275,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				AgentID:        input.AgentID,
 				AgentVersionID: input.AgentVersionID,
 				ExecutionID:    executionID,
+				Mode:           input.Mode,
+				ModeType:       input.ModeType,
+				ExecutionMode:  input.ExecutionMode,
 				ToolName:       toolName,
 				Arguments:      toolArgs,
 			}
@@ -349,6 +359,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 
 				parsed, err := compiledSchema.ValidateJSON([]byte(toValidate))
 				if err != nil {
+					log.Printf("[ARDA Runtime] ValidateJSON failed: %v | toValidate=%q", err, toValidate)
 					if errors.Is(err, jsonschema.ErrOutputTooLarge) {
 						return ExecutionResult{}, NewPermanentError("model output exceeds size limit", ErrOutputTooLarge)
 					}

@@ -2,7 +2,9 @@ package toolgateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -131,10 +133,27 @@ func (g *ParameterBoundsGuardrail) Evaluate(ctx context.Context, evalCtx Guardra
 			switch n := v.(type) {
 			case float64:
 				num = n
+			case float32:
+				num = float64(n)
 			case int:
+				num = float64(n)
+			case int32:
 				num = float64(n)
 			case int64:
 				num = float64(n)
+			case json.Number:
+				if parsed, err := n.Float64(); err == nil {
+					num = parsed
+				} else {
+					continue
+				}
+			case string:
+				cleaned := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(n), "$"))
+				if parsed, err := strconv.ParseFloat(cleaned, 64); err == nil {
+					num = parsed
+				} else {
+					continue
+				}
 			default:
 				continue
 			}

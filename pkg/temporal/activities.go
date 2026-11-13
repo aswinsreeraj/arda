@@ -7,10 +7,14 @@ import (
 	"strings"
 
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
+	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
 	temporalerr "go.temporal.io/sdk/temporal"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // NoopActivityInput represents the input payload passed to NoopActivity.
@@ -53,6 +57,10 @@ type AgentExecutionActivityInput struct {
 	AgentID        uuid.UUID      `json:"agent_id"`
 	AgentVersionID uuid.UUID      `json:"agent_version_id"`
 	ExecutionInput map[string]any `json:"execution_input,omitempty"`
+	ExecutionID    string         `json:"execution_id,omitempty"`
+	Mode           string         `json:"mode,omitempty"`
+	ModeType       string         `json:"mode_type,omitempty"`
+	ExecutionMode  string         `json:"execution_mode,omitempty"`
 }
 
 // AgentExecutionActivityResult represents the activity outcome returned to the workflow.
@@ -66,8 +74,9 @@ type AgentExecutionActivityResult struct {
 
 // AgentActivities encapsulates activities that invoke an injected AgentRuntime.
 type AgentActivities struct {
-	runtime agentruntime.AgentRuntime
-	logger  log.Logger
+	runtime      agentruntime.AgentRuntime
+	reviewClient ardav1.ReviewServiceClient
+	logger       log.Logger
 }
 
 // NewAgentActivities constructs an AgentActivities instance with the provided AgentRuntime.
@@ -79,6 +88,11 @@ func NewAgentActivities(runtime agentruntime.AgentRuntime) *AgentActivities {
 	return &AgentActivities{
 		runtime: runtime,
 	}
+}
+
+// SetReviewClient injects a ReviewServiceClient to automatically create review cases on escalation.
+func (a *AgentActivities) SetReviewClient(rc ardav1.ReviewServiceClient) {
+	a.reviewClient = rc
 }
 
 // SetLogger configures an explicit logger on AgentActivities (useful for testing or custom logging pipelines).
@@ -121,10 +135,27 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 		"agent_version_id", input.AgentVersionID,
 	)
 
+	mode := input.Mode
+	if mode == "" {
+		mode = "async"
+	}
+	modeType := input.ModeType
+	if modeType == "" {
+		modeType = "durable"
+	}
+	execMode := input.ExecutionMode
+	if execMode == "" {
+		execMode = "autonomous"
+	}
+
 	rtInput := agentruntime.ExecutionInput{
 		TenantID:       input.TenantID,
 		AgentID:        input.AgentID,
 		AgentVersionID: input.AgentVersionID,
+		ExecutionID:    input.ExecutionID,
+		Mode:           mode,
+		ModeType:       modeType,
+		ExecutionMode:  execMode,
 		Payload:        input.ExecutionInput,
 	}
 
@@ -148,6 +179,7 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 		// Log sanitized error category without sensitive provider or payload details
 		logger.Error("AgentExecutionActivity runtime execution failed",
 			"error_category", string(category),
+			"error", err.Error(),
 			"tenant_id", input.TenantID,
 			"agent_id", input.AgentID,
 			"agent_version_id", input.AgentVersionID,
@@ -195,6 +227,60 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 			"InvalidResultError",
 			nil,
 		)
+	}
+
+	if (res.Status == agentruntime.StatusEscalated || res.IsEscalation()) && a.reviewClient != nil {
+		proposed := "APPROVE"
+		if p, ok := res.Output["proposed_decision"].(string); ok && p != "" {
+			proposed = p
+		}
+		conf := 0.0
+		if c, ok := res.Output["confidence"].(float64); ok {
+			conf = c
+		}
+		var reasons []string
+		if res.Escalation != nil && res.Escalation.Reason != "" {
+			reasons = append(reasons, res.Escalation.Reason)
+		}
+		var origInput *structpb.Struct
+		if input.ExecutionInput != nil {
+			origInput, _ = structpb.NewStruct(input.ExecutionInput)
+		}
+
+		md := metadata.New(map[string]string{
+			registrygrpc.MetadataTenantID: input.TenantID.String(),
+		})
+		outCtx := metadata.NewOutgoingContext(ctx, md)
+
+		createReq := &ardav1.CreateReviewCaseRequest{
+			TenantId:           input.TenantID.String(),
+			ExecutionId:        input.ExecutionID,
+			AgentId:            input.AgentID.String(),
+			AgentName:          fmt.Sprintf("Agent-%s", input.AgentID.String()[:8]),
+			AgentVersionId:     input.AgentVersionID.String(),
+			ExecutionMode:      "durable",
+			ProposedDecision:   proposed,
+			Confidence:         conf,
+			EscalationReasons:  reasons,
+			FrozenEvidence: &ardav1.FrozenEvidence{
+				OriginalInput:     origInput,
+				AgentReasoning:    res.Reason,
+				ProposedDecision:  proposed,
+				Confidence:        conf,
+				EscalationReasons: reasons,
+			},
+		}
+
+		if created, err := a.reviewClient.CreateReviewCase(outCtx, createReq); err == nil && created.GetCase() != nil {
+			if res.Escalation == nil {
+				res.Escalation = &agentruntime.EscalationInfo{}
+			}
+			res.Escalation.CaseID = created.GetCase().GetId()
+			if res.Output == nil {
+				res.Output = make(map[string]any)
+			}
+			res.Output["case_id"] = created.GetCase().GetId()
+		}
 	}
 
 	logger.Info("AgentExecutionActivity completed successfully",

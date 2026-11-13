@@ -12,7 +12,11 @@ import (
 	"gorm.io/gorm"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
+	"github.com/aswinsreeraj/arda/pkg/mcp"
+	"github.com/aswinsreeraj/arda/pkg/mcp/simulator"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
+	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/credentials"
@@ -20,10 +24,15 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
-	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/aswinsreeraj/arda/services/registry/service"
 	"github.com/aswinsreeraj/arda/services/registry/store"
+	reviewevents "github.com/aswinsreeraj/arda/services/review/events"
+	reviewgrpc "github.com/aswinsreeraj/arda/services/review/grpc"
+	reviewservice "github.com/aswinsreeraj/arda/services/review/service"
+	reviewstore "github.com/aswinsreeraj/arda/services/review/store"
+	"github.com/google/uuid"
+	"strings"
 )
 
 // Config holds runtime configuration for API Gateway v1.
@@ -41,6 +50,9 @@ type Config struct {
 	TemporalNamespace      string
 	TemporalTaskQueue      string
 	RegistryGRPCAddr       string
+	ReviewGRPCAddr         string
+	RedpandaBrokers        string
+	RedpandaProducerSecret string
 	VaultAddress           string
 	VaultToken             string
 	VaultMount             string
@@ -48,16 +60,19 @@ type Config struct {
 
 // Server encapsulates the API Gateway HTTP server and dependencies.
 type Server struct {
-	Handler            http.Handler
-	JWTValidator       *auth.TokenValidator
-	RateLimiter        *ratelimit.Limiter
-	RegistryClient     *proxy.RegistryClient
-	ReliabilityService proxy.ReliabilityService
-	ExecutionClient    proxy.ExecutionClient
-	TemporalClient     *temporal.Client
-	CredentialService  *credentials.Service
-	IdentityService    *identity.Service
-	inProcessGRPC      *registrygrpc.Server
+	Handler             http.Handler
+	JWTValidator        *auth.TokenValidator
+	RateLimiter         *ratelimit.Limiter
+	RegistryClient      *proxy.RegistryClient
+	ReviewClient        *proxy.ReviewClient
+	ReliabilityService  proxy.ReliabilityService
+	ExecutionClient     proxy.ExecutionClient
+	TemporalClient      *temporal.Client
+	CredentialService   *credentials.Service
+	IdentityService     *identity.Service
+	inProcessGRPC       *registrygrpc.Server
+	inProcessReviewGRPC *reviewgrpc.Server
+	OutboxRelay         *reviewevents.OutboxRelay
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
@@ -136,6 +151,56 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		regClient = proxy.NewRegistryClientFromConn(conn)
 	}
 
+	// Initialize Human Review gRPC connection
+	var revClient *proxy.ReviewClient
+	var inProcessReviewGRPC *reviewgrpc.Server
+	var outboxRelay *reviewevents.OutboxRelay
+	if cfg.ReviewGRPCAddr != "" {
+		rc, err := proxy.NewReviewClient(cfg.ReviewGRPCAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to review grpc service: %w", err)
+		}
+		revClient = rc
+	} else if db != nil {
+		revStore := reviewstore.NewPostgresStore(db)
+		var producer reviewevents.EventProducer
+		brokerAddr := cfg.RedpandaBrokers
+		if brokerAddr == "" {
+			brokerAddr = "127.0.0.1:19092"
+		}
+		if kp, err := reviewevents.NewKafkaProducer(brokerAddr); err == nil {
+			producer = kp
+		} else {
+			producer = reviewevents.NewMockProducer()
+		}
+		outboxRelay = reviewevents.NewOutboxRelay(revStore, producer)
+		var signaler reviewservice.TemporalSignaler
+		if tempClient != nil {
+			signaler = tempClient.RawClient()
+		}
+		revSvc := reviewservice.NewService(
+			revStore,
+			reviewservice.WithTemporalSignaler(signaler),
+			reviewservice.WithProducerSecret(cfg.RedpandaProducerSecret),
+			reviewservice.WithOutboxRelay(outboxRelay),
+		)
+		inProcessReviewGRPC = reviewgrpc.NewServer(revSvc)
+		lis := bufconn.Listen(1024 * 1024)
+		go func() {
+			_ = inProcessReviewGRPC.Serve(lis)
+		}()
+		conn, err := grpc.NewClient("passthrough://bufnet-review",
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return lis.Dial()
+			}),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial in-process review grpc: %w", err)
+		}
+		revClient = proxy.NewReviewClientFromConn(conn)
+	}
+
 	// Initialize Vault and Credential Service
 	var credSvc *credentials.Service
 	var credHandler *credentials.Handler
@@ -187,6 +252,11 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		grpcClient = regClient.Client()
 	}
 
+	var grpcReviewClient ardav1.ReviewServiceClient
+	if revClient != nil {
+		grpcReviewClient = revClient.Client()
+	}
+
 	// Initialize Execution Service client if upstream address is set
 	var execClient proxy.ExecutionClient
 	if cfg.ExecutionServiceAddr != "" {
@@ -211,6 +281,76 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	toolRegistry := toolgateway.NewRegistry(toolStore)
 	toolsHandler := gatewayhttp.NewToolsHandler(toolRegistry, toolStore, gatewayhttp.WriteErrorResponse)
 
+	// Initialize AgentRuntime for Realtime Synchronous Execution
+	var agentRuntimeInstance agentruntime.AgentRuntime
+	if regClient != nil && secretStore != nil {
+		providerRegistry := agentruntime.NewProviderRegistry()
+		_ = providerRegistry.RegisterWithAliases(agentruntime.NewOpenAIAdapter(), "gpt")
+		_ = providerRegistry.RegisterWithAliases(agentruntime.NewAnthropicAdapter(), "claude")
+		_ = providerRegistry.RegisterWithAliases(agentruntime.NewGeminiAdapter(), "gemini")
+		_ = providerRegistry.RegisterWithAliases(agentruntime.NewGroqAdapter(), "groqcloud")
+		_ = providerRegistry.RegisterWithAliases(agentruntime.NewGrokAdapter(), "xai")
+		_ = providerRegistry.Register(agentruntime.NewOpenRouterAdapter())
+		_ = providerRegistry.Register(agentruntime.NewMockLLMClient())
+
+		credResolver, err := agentruntime.NewVaultCredentialResolver(secretStore)
+		if err == nil {
+			resolvingClient, err := agentruntime.NewResolvingLLMClient(
+				providerRegistry,
+				credResolver,
+				agentruntime.WithDefaultProvider("openai"),
+				agentruntime.WithResolvingDefaultModel("gpt-4o"),
+			)
+			if err == nil {
+				configProvider, _ := agentruntime.NewRegistryConfigProvider(regClient.Client())
+
+				mcpManager := mcp.NewConnectionManager(mcp.ManagerConfig{AllowLocalhost: true})
+				sim := simulator.NewTransactionSimulator(uuid.Nil)
+				_ = mcpManager.RegisterInProcessServer("mcp-tx-conn", uuid.Nil, sim.Server())
+
+				handlers := toolgateway.NewHandlerRegistry()
+				handlers.Register("mcp:mcp-tx-conn:get_transaction", mcp.NewToolHandler(mcpManager, "mcp-tx-conn", "get_transaction"))
+				handlers.Register("mcp:mcp-tx-conn:reverse_transaction", mcp.NewToolHandler(mcpManager, "mcp-tx-conn", "reverse_transaction"))
+				handlers.SetDynamicFallback(func(id string) toolgateway.ToolHandler {
+					if strings.HasPrefix(id, "mcp:") {
+						connID, toolName, ok := mcp.ParseHandlerID(id)
+						if ok {
+							return mcp.NewToolHandler(mcpManager, connID, toolName)
+						}
+					}
+					return nil
+				})
+
+				guardrail := toolgateway.NewCompositeGuardrail(
+					toolgateway.NewDestructiveOperationGuardrail(),
+					toolgateway.NewParameterBoundsGuardrail(5000.0),
+				)
+
+				toolGw := toolgateway.NewGateway(toolgateway.GatewayConfig{
+					Registry:        toolRegistry,
+					Store:           toolStore,
+					Guardrail:       guardrail,
+					HandlerRegistry: handlers,
+					AuditLogger:     toolgateway.NewStoreAuditLogger(toolStore),
+					ConfigProvider:  configProvider,
+				})
+
+				executor, err := agentruntime.NewLLMExecutor(
+					resolvingClient,
+					configProvider,
+					agentruntime.WithDefaultModel("gpt-4o"),
+					agentruntime.WithDefaultExecutorProvider("openai"),
+					agentruntime.WithToolGateway(toolGw),
+				)
+				if err == nil {
+					if rt, err := agentruntime.New(executor); err == nil {
+						agentRuntimeInstance = rt
+					}
+				}
+			}
+		}
+	}
+
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
@@ -221,19 +361,24 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		CredentialHandler:  credHandler,
 		IdentityHandler:    identHandler,
 		ToolsHandler:       toolsHandler,
+		AgentRuntime:       agentRuntimeInstance,
+		ReviewClient:       grpcReviewClient,
 	})
 
 	return &Server{
-		Handler:            gwHandler,
-		JWTValidator:       jwtValidator,
-		RateLimiter:        limiter,
-		RegistryClient:     regClient,
-		ReliabilityService: relSvc,
-		ExecutionClient:    execClient,
-		TemporalClient:     tempClient,
-		CredentialService:  credSvc,
-		IdentityService:    identSvc,
-		inProcessGRPC:      inProcessGRPC,
+		Handler:             gwHandler,
+		JWTValidator:        jwtValidator,
+		RateLimiter:         limiter,
+		RegistryClient:      regClient,
+		ReviewClient:        revClient,
+		ReliabilityService:  relSvc,
+		ExecutionClient:     execClient,
+		TemporalClient:      tempClient,
+		CredentialService:   credSvc,
+		IdentityService:     identSvc,
+		inProcessGRPC:       inProcessGRPC,
+		inProcessReviewGRPC: inProcessReviewGRPC,
+		OutboxRelay:         outboxRelay,
 	}, nil
 }
 
@@ -241,6 +386,9 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 func (s *Server) Close() error {
 	if s.RegistryClient != nil {
 		_ = s.RegistryClient.Close()
+	}
+	if s.ReviewClient != nil {
+		_ = s.ReviewClient.Close()
 	}
 	if s.ReliabilityService != nil {
 		_ = s.ReliabilityService.Close()
@@ -253,6 +401,9 @@ func (s *Server) Close() error {
 	}
 	if s.inProcessGRPC != nil {
 		s.inProcessGRPC.GracefulStop()
+	}
+	if s.inProcessReviewGRPC != nil {
+		s.inProcessReviewGRPC.GracefulStop()
 	}
 	return nil
 }

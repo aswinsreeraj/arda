@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/execution"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
@@ -575,5 +576,137 @@ func TestGRPCRegistryAdapter(t *testing.T) {
 	}
 	if ver.Configuration.ExecutionMode != domain.ExecutionModeAutonomous {
 		t.Errorf("expected autonomous mode, got %s", ver.Configuration.ExecutionMode)
+	}
+}
+
+type mockReviewServiceClient struct {
+	createReq *ardav1.CreateReviewCaseRequest
+	caseID    string
+}
+
+func (m *mockReviewServiceClient) CreateReviewCase(ctx context.Context, in *ardav1.CreateReviewCaseRequest, opts ...grpc.CallOption) (*ardav1.CreateReviewCaseResponse, error) {
+	m.createReq = in
+	return &ardav1.CreateReviewCaseResponse{
+		Case: &ardav1.ReviewCase{
+			Id:       m.caseID,
+			TenantId: in.TenantId,
+			AgentId:  in.AgentId,
+			Status:   "OPEN",
+		},
+	}, nil
+}
+
+func (m *mockReviewServiceClient) GetReviewCase(ctx context.Context, in *ardav1.GetReviewCaseRequest, opts ...grpc.CallOption) (*ardav1.GetReviewCaseResponse, error) {
+	return nil, nil
+}
+
+func (m *mockReviewServiceClient) ListReviewCases(ctx context.Context, in *ardav1.ListReviewCasesRequest, opts ...grpc.CallOption) (*ardav1.ListReviewCasesResponse, error) {
+	return nil, nil
+}
+
+func (m *mockReviewServiceClient) ResolveReviewCase(ctx context.Context, in *ardav1.ResolveReviewCaseRequest, opts ...grpc.CallOption) (*ardav1.ResolveReviewCaseResponse, error) {
+	return nil, nil
+}
+
+type mockExecutionRuntime struct {
+	result agentruntime.ExecutionResult
+	err    error
+}
+
+func (m *mockExecutionRuntime) Run(ctx context.Context, in agentruntime.ExecutionInput) (agentruntime.ExecutionResult, error) {
+	return m.result, m.err
+}
+
+func TestService_SubmitExecution_EscalationCreatesReviewCase(t *testing.T) {
+	identity, agentID, versionID := defaultTestContext()
+
+	registryMock := &mockRegistryClient{
+		getVersionFn: func(ctx context.Context, tenantID, aID, vID uuid.UUID) (*domain.AgentVersion, error) {
+			return &domain.AgentVersion{
+				ID:            versionID,
+				AgentID:       agentID,
+				VersionNumber: 1,
+				Published:     true,
+				Configuration: domain.Configuration{
+					ExecutionMode:        domain.ExecutionModeAutonomous,
+					ReliabilityThreshold: 0.85,
+				},
+			}, nil
+		},
+	}
+
+	runtimeMock := &mockExecutionRuntime{
+		result: agentruntime.ExecutionResult{
+			Status: agentruntime.StatusEscalated,
+			Reason: "Uncertain classification",
+			Escalation: &agentruntime.EscalationInfo{
+				Reason: "Confidence 0.60 below threshold 0.85",
+				Target: "human_reviewer",
+			},
+			Output: map[string]any{
+				"proposed_decision": "APPROVE",
+				"confidence":        0.60,
+			},
+		},
+	}
+
+	reviewMock := &mockReviewServiceClient{
+		caseID: "case_esc_sync_123",
+	}
+
+	dispatcherMock := &mockWorkflowDispatcher{}
+
+	svc, err := execution.NewService(
+		dispatcherMock,
+		registryMock,
+		execution.WithAgentRuntime(runtimeMock),
+		execution.WithReviewClient(reviewMock),
+	)
+	if err != nil {
+		t.Fatalf("failed to create execution service: %v", err)
+	}
+
+	resp, err := svc.SubmitExecution(context.Background(), identity, execution.SubmitExecutionRequest{
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionMode:  domain.ExecutionModeAutonomous,
+		Mode:           "sync",
+		Input:          map[string]any{"claim_id": "claim_999"},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error submitting execution: %v", err)
+	}
+
+	if resp.Status != string(agentruntime.StatusEscalated) {
+		t.Errorf("expected status ESCALATED, got %s", resp.Status)
+	}
+
+	// Verify reviewClient.CreateReviewCase was called with snapshot evidence
+	if reviewMock.createReq == nil {
+		t.Fatal("expected reviewClient.CreateReviewCase to be called, but was nil")
+	}
+	if reviewMock.createReq.TenantId != identity.TenantID.String() {
+		t.Errorf("expected tenant ID %s, got %s", identity.TenantID, reviewMock.createReq.TenantId)
+	}
+	if reviewMock.createReq.AgentId != agentID.String() {
+		t.Errorf("expected agent ID %s, got %s", agentID, reviewMock.createReq.AgentId)
+	}
+	if reviewMock.createReq.ExecutionMode != "realtime" {
+		t.Errorf("expected execution mode realtime, got %s", reviewMock.createReq.ExecutionMode)
+	}
+	if reviewMock.createReq.FrozenEvidence == nil {
+		t.Fatal("expected FrozenEvidence to be non-nil")
+	}
+	if reviewMock.createReq.FrozenEvidence.ProposedDecision != "APPROVE" {
+		t.Errorf("expected proposed decision APPROVE, got %s", reviewMock.createReq.FrozenEvidence.ProposedDecision)
+	}
+
+	// Verify response has case ID populated
+	if resp.Escalation == nil || resp.Escalation.CaseID != "case_esc_sync_123" {
+		t.Errorf("expected escalation case ID case_esc_sync_123, got: %+v", resp.Escalation)
+	}
+	if resp.Output["case_id"] != "case_esc_sync_123" {
+		t.Errorf("expected output case_id case_esc_sync_123, got: %v", resp.Output["case_id"])
 	}
 }

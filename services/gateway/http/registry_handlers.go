@@ -41,6 +41,10 @@ func handleCreateAgentGRPC(c *gin.Context, client ardav1.AgentRegistryServiceCli
 		ExecutionMode        domain.ExecutionMode `json:"execution_mode"`
 		Guardrails           map[string]any       `json:"guardrails"`
 		Budgets              map[string]any       `json:"budgets"`
+		LLMProvider          string               `json:"llm_provider"`
+		LLMModel             string               `json:"llm_model"`
+		LLMConfig            *domain.LLMConfig    `json:"llm_config"`
+		OutputSchema         *domain.OutputSchema `json:"output_schema"`
 	}
 
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
@@ -56,7 +60,7 @@ func handleCreateAgentGRPC(c *gin.Context, client ardav1.AgentRegistryServiceCli
 			WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
 			return
 		}
-	} else if body.PromptTemplate != "" || len(body.Tools) > 0 || body.ReliabilityThreshold != nil || body.ExecutionMode != "" {
+	} else if body.PromptTemplate != "" || len(body.Tools) > 0 || body.ReliabilityThreshold != nil || body.ExecutionMode != "" || body.LLMProvider != "" || body.LLMConfig != nil {
 		threshold := 0.85
 		if body.ReliabilityThreshold != nil {
 			threshold = *body.ReliabilityThreshold
@@ -69,6 +73,13 @@ func handleCreateAgentGRPC(c *gin.Context, client ardav1.AgentRegistryServiceCli
 		if tools == nil {
 			tools = []string{}
 		}
+		llmCfg := body.LLMConfig
+		if llmCfg == nil && (body.LLMProvider != "" || body.LLMModel != "") {
+			llmCfg = &domain.LLMConfig{
+				Provider: body.LLMProvider,
+				Model:    body.LLMModel,
+			}
+		}
 		cfg := domain.Configuration{
 			PromptTemplate:       body.PromptTemplate,
 			Tools:                tools,
@@ -76,6 +87,8 @@ func handleCreateAgentGRPC(c *gin.Context, client ardav1.AgentRegistryServiceCli
 			ExecutionMode:        mode,
 			Guardrails:           body.Guardrails,
 			Budgets:              body.Budgets,
+			LLMConfig:            llmCfg,
+			OutputSchema:         body.OutputSchema,
 		}
 		var err error
 		protoCfg, err = registrygrpc.DomainConfigToProto(cfg)
@@ -208,6 +221,10 @@ func handleCreateVersionGRPC(c *gin.Context, client ardav1.AgentRegistryServiceC
 		ExecutionMode        domain.ExecutionMode `json:"execution_mode"`
 		Guardrails           map[string]any       `json:"guardrails"`
 		Budgets              map[string]any       `json:"budgets"`
+		LLMProvider          string               `json:"llm_provider"`
+		LLMModel             string               `json:"llm_model"`
+		LLMConfig            *domain.LLMConfig    `json:"llm_config"`
+		OutputSchema         *domain.OutputSchema `json:"output_schema"`
 	}
 
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
@@ -231,6 +248,13 @@ func handleCreateVersionGRPC(c *gin.Context, client ardav1.AgentRegistryServiceC
 		if tools == nil {
 			tools = []string{}
 		}
+		llmCfg := body.LLMConfig
+		if llmCfg == nil && (body.LLMProvider != "" || body.LLMModel != "") {
+			llmCfg = &domain.LLMConfig{
+				Provider: body.LLMProvider,
+				Model:    body.LLMModel,
+			}
+		}
 		cfg = domain.Configuration{
 			PromptTemplate:       body.PromptTemplate,
 			Tools:                tools,
@@ -238,6 +262,8 @@ func handleCreateVersionGRPC(c *gin.Context, client ardav1.AgentRegistryServiceC
 			ExecutionMode:        mode,
 			Guardrails:           body.Guardrails,
 			Budgets:              body.Budgets,
+			LLMConfig:            llmCfg,
+			OutputSchema:         body.OutputSchema,
 		}
 	}
 

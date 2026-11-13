@@ -1,0 +1,7 @@
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS mode TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS mode_type TEXT;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS execution_mode TEXT;
+
+ALTER TABLE tool_invocations ADD COLUMN IF NOT EXISTS mode TEXT;
+ALTER TABLE tool_invocations ADD COLUMN IF NOT EXISTS mode_type TEXT;
+

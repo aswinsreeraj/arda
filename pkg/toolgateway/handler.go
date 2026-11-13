@@ -28,6 +28,7 @@ type ToolHandler interface {
 type HandlerRegistry struct {
 	mu       sync.RWMutex
 	handlers map[string]ToolHandler
+	fallback func(id string) ToolHandler
 }
 
 // NewHandlerRegistry constructs a new HandlerRegistry populated with standard built-in handlers.
@@ -42,6 +43,13 @@ func NewHandlerRegistry() *HandlerRegistry {
 	return r
 }
 
+// SetDynamicFallback sets a resolver called when an explicit handler is not found.
+func (r *HandlerRegistry) SetDynamicFallback(fallback func(id string) ToolHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallback = fallback
+}
+
 // Register registers a handler under a specific identifier.
 func (r *HandlerRegistry) Register(id string, handler ToolHandler) {
 	r.mu.Lock()
@@ -52,9 +60,19 @@ func (r *HandlerRegistry) Register(id string, handler ToolHandler) {
 // Get retrieves a handler by identifier.
 func (r *HandlerRegistry) Get(id string) (ToolHandler, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	h, ok := r.handlers[id]
-	return h, ok
+	fallback := r.fallback
+	r.mu.RUnlock()
+
+	if ok {
+		return h, true
+	}
+	if fallback != nil {
+		if resolved := fallback(id); resolved != nil {
+			return resolved, true
+		}
+	}
+	return nil, false
 }
 
 // EchoHandler simply echoes back received arguments.

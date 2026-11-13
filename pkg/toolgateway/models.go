@@ -98,6 +98,8 @@ type ToolInvocation struct {
 	ExecutionID    string           `json:"execution_id" gorm:"index;not null"`
 	ToolID         string           `json:"tool_id" gorm:"index;not null"`
 	ToolName       string           `json:"tool_name" gorm:"not null"`
+	Mode           string           `json:"mode,omitempty" gorm:"type:text"`
+	ModeType       string           `json:"mode_type,omitempty" gorm:"type:text"`
 	ArgumentsHash  string           `json:"arguments_hash" gorm:"not null"`
 	Status         InvocationStatus `json:"status" gorm:"not null"`
 	Result         map[string]any   `json:"result,omitempty" gorm:"serializer:json"`
@@ -128,4 +130,7 @@ type AuditEvent struct {
 	SanitizedArguments map[string]any     `json:"sanitized_arguments,omitempty" gorm:"serializer:json"`
 	DurationMs         int64              `json:"duration_ms" gorm:"not null"`
 	Timestamp          time.Time          `json:"timestamp" gorm:"not null"`
+	Mode               string             `json:"mode,omitempty" gorm:"type:text"`
+	ModeType           string             `json:"mode_type,omitempty" gorm:"type:text"`
+	ExecutionMode      string             `json:"execution_mode,omitempty" gorm:"type:text"`
 }

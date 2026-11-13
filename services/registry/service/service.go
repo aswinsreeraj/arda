@@ -21,6 +21,10 @@ type CreateAgentRequest struct {
 	ExecutionMode        domain.ExecutionMode `json:"execution_mode,omitempty"`
 	Guardrails           map[string]any       `json:"guardrails,omitempty"`
 	Budgets              map[string]any       `json:"budgets,omitempty"`
+	LLMProvider          string               `json:"llm_provider,omitempty"`
+	LLMModel             string               `json:"llm_model,omitempty"`
+	LLMConfig            *domain.LLMConfig    `json:"llm_config,omitempty"`
+	OutputSchema         *domain.OutputSchema `json:"output_schema,omitempty"`
 }
 
 // ExtractConfiguration merges nested or flat configuration fields from the request.
@@ -29,7 +33,7 @@ func (r CreateAgentRequest) ExtractConfiguration() *domain.Configuration {
 		return r.Configuration
 	}
 	// Check if flat fields were provided
-	if r.PromptTemplate != "" || len(r.Tools) > 0 || r.ReliabilityThreshold != nil || r.ExecutionMode != "" {
+	if r.PromptTemplate != "" || len(r.Tools) > 0 || r.ReliabilityThreshold != nil || r.ExecutionMode != "" || r.LLMProvider != "" || r.LLMConfig != nil {
 		threshold := 0.85
 		if r.ReliabilityThreshold != nil {
 			threshold = *r.ReliabilityThreshold
@@ -42,6 +46,13 @@ func (r CreateAgentRequest) ExtractConfiguration() *domain.Configuration {
 		if tools == nil {
 			tools = []string{}
 		}
+		llmCfg := r.LLMConfig
+		if llmCfg == nil && (r.LLMProvider != "" || r.LLMModel != "") {
+			llmCfg = &domain.LLMConfig{
+				Provider: r.LLMProvider,
+				Model:    r.LLMModel,
+			}
+		}
 		return &domain.Configuration{
 			PromptTemplate:       r.PromptTemplate,
 			Tools:                tools,
@@ -49,6 +60,8 @@ func (r CreateAgentRequest) ExtractConfiguration() *domain.Configuration {
 			ExecutionMode:        mode,
 			Guardrails:           r.Guardrails,
 			Budgets:              r.Budgets,
+			LLMConfig:            llmCfg,
+			OutputSchema:         r.OutputSchema,
 		}
 	}
 	return nil

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrNotFound indicates the credential record does not exist for the tenant.
@@ -67,11 +68,16 @@ func (s *PostgresStore) Save(ctx context.Context, cred *Credential) error {
 	}
 	cred.UpdatedAt = now
 
+	cleanCategory := strings.ToLower(strings.TrimSpace(string(cred.Category)))
+	cleanProvider := strings.ToLower(strings.TrimSpace(cred.Provider))
+	cred.Category = Category(cleanCategory)
+	cred.Provider = cleanProvider
+
 	model := CredentialModel{
 		ID:        cred.ID,
 		TenantID:  cred.TenantID,
-		Category:  string(cred.Category),
-		Provider:  cred.Provider,
+		Category:  cleanCategory,
+		Provider:  cleanProvider,
 		Reference: cred.Reference,
 		CreatedAt: cred.CreatedAt,
 		UpdatedAt: cred.UpdatedAt,
@@ -79,7 +85,7 @@ func (s *PostgresStore) Save(ctx context.Context, cred *Credential) error {
 
 	var existing CredentialModel
 	err := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND category = ? AND provider = ?", cred.TenantID, cred.Category, cred.Provider).
+		Where("tenant_id = ? AND LOWER(category) = ? AND LOWER(provider) = ?", cred.TenantID, cleanCategory, cleanProvider).
 		First(&existing).Error
 
 	if err == nil {
@@ -89,7 +95,10 @@ func (s *PostgresStore) Save(ctx context.Context, cred *Credential) error {
 		cred.CreatedAt = existing.CreatedAt
 		return s.db.WithContext(ctx).Save(&model).Error
 	} else if errors.Is(err, gorm.ErrRecordNotFound) {
-		return s.db.WithContext(ctx).Create(&model).Error
+		return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "category"}, {Name: "provider"}},
+			DoUpdates: clause.AssignmentColumns([]string{"reference", "updated_at"}),
+		}).Create(&model).Error
 	}
 	return err
 }
@@ -109,10 +118,11 @@ func (s *PostgresStore) Get(ctx context.Context, tenantID, id uuid.UUID) (*Crede
 }
 
 func (s *PostgresStore) GetByCategoryAndProvider(ctx context.Context, tenantID uuid.UUID, category Category, provider string) (*Credential, error) {
+	cleanCategory := strings.ToLower(strings.TrimSpace(string(category)))
 	cleanProvider := strings.ToLower(strings.TrimSpace(provider))
 	var model CredentialModel
 	err := s.db.WithContext(ctx).
-		Where("tenant_id = ? AND category = ? AND LOWER(provider) = ?", tenantID, string(category), cleanProvider).
+		Where("tenant_id = ? AND LOWER(category) = ? AND LOWER(provider) = ?", tenantID, cleanCategory, cleanProvider).
 		First(&model).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -175,11 +185,13 @@ func (m *MemoryStore) Save(ctx context.Context, cred *Credential) error {
 	}
 	cred.UpdatedAt = now
 
+	cleanCategory := strings.ToLower(strings.TrimSpace(string(cred.Category)))
 	cleanProvider := strings.ToLower(strings.TrimSpace(cred.Provider))
+	cred.Category = Category(cleanCategory)
 	cred.Provider = cleanProvider
 
 	for _, c := range m.creds {
-		if c.TenantID == cred.TenantID && c.Category == cred.Category && strings.EqualFold(c.Provider, cleanProvider) {
+		if c.TenantID == cred.TenantID && strings.EqualFold(string(c.Category), cleanCategory) && strings.EqualFold(c.Provider, cleanProvider) {
 			cred.ID = c.ID
 			cred.CreatedAt = c.CreatedAt
 			break
@@ -202,12 +214,13 @@ func (m *MemoryStore) Get(ctx context.Context, tenantID, id uuid.UUID) (*Credent
 }
 
 func (m *MemoryStore) GetByCategoryAndProvider(ctx context.Context, tenantID uuid.UUID, category Category, provider string) (*Credential, error) {
+	cleanCategory := strings.ToLower(strings.TrimSpace(string(category)))
 	cleanProvider := strings.ToLower(strings.TrimSpace(provider))
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	for _, c := range m.creds {
-		if c.TenantID == tenantID && c.Category == category && strings.EqualFold(c.Provider, cleanProvider) {
+		if c.TenantID == tenantID && strings.EqualFold(string(c.Category), cleanCategory) && strings.EqualFold(c.Provider, cleanProvider) {
 			copied := *c
 			return &copied, nil
 		}

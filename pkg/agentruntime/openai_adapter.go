@@ -49,6 +49,9 @@ var DefaultGroqModels = []string{
 	"llama3-8b-8192",
 	"mixtral-8x7b-32768",
 	"gemma2-9b-it",
+	"qwen/qwen3.8-27b",
+	"openai/gpt-oss-120b",
+	"openai/gpt-oss-20b",
 }
 
 // DefaultOpenRouterModels lists popular multi-provider models on OpenRouter.
@@ -268,7 +271,7 @@ func (a *OpenAIAdapter) IsModelSupported(model string) bool {
 		return false
 	case ProviderGroq:
 		// Accept common open-source model families available on Groq
-		if strings.HasPrefix(lower, "llama") || strings.HasPrefix(lower, "mixtral") || strings.HasPrefix(lower, "gemma") || strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "deepseek") {
+		if strings.HasPrefix(lower, "llama") || strings.HasPrefix(lower, "mixtral") || strings.HasPrefix(lower, "gemma") || strings.HasPrefix(lower, "qwen") || strings.HasPrefix(lower, "deepseek") || strings.HasPrefix(lower, "openai/") || strings.HasPrefix(lower, "allam") {
 			return true
 		}
 		return false
@@ -345,7 +348,7 @@ func (a *OpenAIAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 	if model == "" {
 		switch a.ProviderID() {
 		case ProviderGroq:
-			model = "llama-3.3-70b-versatile"
+			model = "qwen/qwen3.8-27b"
 		case ProviderOpenRouter:
 			model = "anthropic/claude-3.5-sonnet"
 		case ProviderGrok:

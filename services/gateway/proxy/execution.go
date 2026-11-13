@@ -129,7 +129,7 @@ func (c *HTTPExecutionClient) SubmitExecution(ctx context.Context, authHeader st
 		}
 	}
 
-	if resp.StatusCode == http.StatusAccepted {
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
 		var execResp execution.SubmitExecutionResponse
 		if err := json.Unmarshal(respBody, &execResp); err != nil {
 			return nil, &ExecutionError{

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/registry/domain"
@@ -16,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // WorkflowDispatcher defines the contract for submitting execution workflows to Temporal.
@@ -105,25 +108,50 @@ func (a *GRPCRegistryAdapter) GetAgentVersion(ctx context.Context, tenantID, age
 }
 
 // Service coordinates agent execution requests, tenant authorization, version verification,
-// and Temporal workflow submission.
+// and Temporal workflow submission or direct realtime runtime execution.
 type Service struct {
-	dispatcher WorkflowDispatcher
-	registry   RegistryClient
+	dispatcher   WorkflowDispatcher
+	registry     RegistryClient
+	runtime      agentruntime.AgentRuntime
+	reviewClient ardav1.ReviewServiceClient
+}
+
+// Option configures optional parameters for an execution Service.
+type Option func(*Service)
+
+// WithAgentRuntime injects an AgentRuntime instance for synchronous realtime execution.
+func WithAgentRuntime(rt agentruntime.AgentRuntime) Option {
+	return func(s *Service) {
+		s.runtime = rt
+	}
+}
+
+// WithReviewClient injects a ReviewServiceClient for registering review cases upon escalation.
+func WithReviewClient(rc ardav1.ReviewServiceClient) Option {
+	return func(s *Service) {
+		s.reviewClient = rc
+	}
 }
 
 // NewService constructs an Execution Service instance.
-func NewService(dispatcher WorkflowDispatcher, registry RegistryClient) (*Service, error) {
-	if dispatcher == nil {
-		return nil, errors.New("execution service: workflow dispatcher cannot be nil")
-	}
+func NewService(dispatcher WorkflowDispatcher, registry RegistryClient, opts ...Option) (*Service, error) {
 	if registry == nil {
 		return nil, errors.New("execution service: registry client cannot be nil")
 	}
 
-	return &Service{
+	s := &Service{
 		dispatcher: dispatcher,
 		registry:   registry,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	if s.dispatcher == nil && s.runtime == nil {
+		return nil, errors.New("execution service: either workflow dispatcher or agent runtime must be provided")
+	}
+
+	return s, nil
 }
 
 // GenerateWorkflowID constructs a collision-safe, deterministic workflow identifier.
@@ -204,6 +232,118 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		}
 	}
 
+	// 1. Synchronous Realtime Execution
+	if req.Mode == "sync" {
+		if s.runtime == nil {
+			return nil, NewUpstreamUnavailableError("realtime execution runtime is not configured", nil)
+		}
+
+		startTime := time.Now().UTC()
+		execID := strings.TrimSpace(req.ExecutionID)
+		if execID == "" {
+			execID = fmt.Sprintf("exec-sync-%s-%s", req.AgentID, uuid.New().String())
+		}
+
+		rtInput := agentruntime.ExecutionInput{
+			TenantID:       identity.TenantID,
+			AgentID:        req.AgentID,
+			AgentVersionID: req.AgentVersionID,
+			ExecutionID:    execID,
+			Mode:           "sync",
+			ModeType:       "realtime",
+			ExecutionMode:  string(execMode),
+			Payload:        req.Input,
+		}
+
+		res, err := s.runtime.Run(ctx, rtInput)
+		if err != nil {
+			cat := agentruntime.ClassifyError(err)
+			switch cat {
+			case agentruntime.CategoryInvalidInput:
+				return nil, NewValidationError(err.Error())
+			case agentruntime.CategoryPermanent:
+				return nil, NewValidationError(err.Error())
+			default:
+				return nil, NewUpstreamError("agent runtime execution failed", err)
+			}
+		}
+
+		if (res.Status == agentruntime.StatusEscalated || res.IsEscalation()) && s.reviewClient != nil {
+			proposed := "APPROVE"
+			if p, ok := res.Output["proposed_decision"].(string); ok && p != "" {
+				proposed = p
+			}
+			conf := 0.0
+			if c, ok := res.Output["confidence"].(float64); ok {
+				conf = c
+			}
+			var reasons []string
+			if res.Escalation != nil && res.Escalation.Reason != "" {
+				reasons = append(reasons, res.Escalation.Reason)
+			}
+			var origInput *structpb.Struct
+			if req.Input != nil {
+				origInput, _ = structpb.NewStruct(req.Input)
+			}
+
+			md := metadata.New(map[string]string{
+				registrygrpc.MetadataTenantID: identity.TenantID.String(),
+			})
+			outCtx := metadata.NewOutgoingContext(ctx, md)
+
+			createReq := &ardav1.CreateReviewCaseRequest{
+				TenantId:             identity.TenantID.String(),
+				ExecutionId:          execID,
+				AgentId:              req.AgentID.String(),
+				AgentName:            fmt.Sprintf("Agent-%s", req.AgentID.String()[:8]),
+				AgentVersionId:       req.AgentVersionID.String(),
+				AgentVersionNumber:   int32(ver.VersionNumber),
+				ExecutionMode:        "realtime",
+				ProposedDecision:     proposed,
+				Confidence:           conf,
+				ReliabilityThreshold: ver.Configuration.ReliabilityThreshold,
+				EscalationReasons:    reasons,
+				FrozenEvidence: &ardav1.FrozenEvidence{
+					OriginalInput:        origInput,
+					AgentReasoning:       res.Reason,
+					ProposedDecision:     proposed,
+					Confidence:           conf,
+					ReliabilityThreshold: ver.Configuration.ReliabilityThreshold,
+					EscalationReasons:    reasons,
+				},
+			}
+
+			if created, err := s.reviewClient.CreateReviewCase(outCtx, createReq); err == nil && created.GetCase() != nil {
+				if res.Escalation == nil {
+					res.Escalation = &agentruntime.EscalationInfo{}
+				}
+				res.Escalation.CaseID = created.GetCase().GetId()
+				if res.Output == nil {
+					res.Output = make(map[string]any)
+				}
+				res.Output["case_id"] = created.GetCase().GetId()
+			}
+		}
+
+		return &SubmitExecutionResponse{
+			AgentID:          req.AgentID,
+			AgentVersionID:   req.AgentVersionID,
+			Status:           string(res.Status),
+			ExecutionMode:    execMode,
+			Mode:             "sync",
+			Output:           res.Output,
+			StructuredOutput: res.StructuredOutput,
+			Reason:           res.Reason,
+			Escalation:       res.Escalation,
+			DurationMs:       time.Since(startTime).Milliseconds(),
+		}, nil
+	}
+
+	// 2. Durable Temporal Asynchronous Workflow Execution
+	if s.dispatcher == nil {
+		return nil, NewUpstreamUnavailableError("temporal workflow dispatcher is not configured", nil)
+	}
+
 	workflowID := GenerateWorkflowID(req.AgentID, req.ExecutionID)
 
 	// Pin execution strictly to the validated version ID
@@ -211,6 +351,10 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		TenantID:       identity.TenantID,
 		AgentID:        req.AgentID,
 		AgentVersionID: req.AgentVersionID,
+		ExecutionID:    req.ExecutionID,
+		Mode:           "async",
+		ModeType:       "durable",
+		ExecutionMode:  string(execMode),
 		ExecutionInput: req.Input,
 	}
 

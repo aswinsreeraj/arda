@@ -43,8 +43,9 @@ func (s *Service) SaveCredential(ctx context.Context, tenantID uuid.UUID, req Sa
 		return nil, err
 	}
 
+	cleanCategory := Category(strings.ToLower(strings.TrimSpace(string(req.Category))))
 	cleanProvider := strings.ToLower(strings.TrimSpace(req.Provider))
-	key, field := credentialKeyAndField(req.Category, cleanProvider)
+	key, field := credentialKeyAndField(cleanCategory, cleanProvider)
 
 	// Write secret to tenant-scoped Vault KV v2 storage
 	if err := s.vaultStore.WriteSecret(ctx, tenantID, key, map[string]string{
@@ -55,12 +56,24 @@ func (s *Service) SaveCredential(ctx context.Context, tenantID uuid.UUID, req Sa
 
 	reference := vault.FormatReferenceWithField(key, field)
 
-	cred := &Credential{
-		ID:        uuid.New(),
-		TenantID:  tenantID,
-		Category:  req.Category,
-		Provider:  cleanProvider,
-		Reference: reference,
+	var cred *Credential
+	if existing, err := s.store.GetByCategoryAndProvider(ctx, tenantID, cleanCategory, cleanProvider); err == nil && existing != nil {
+		cred = &Credential{
+			ID:        existing.ID,
+			TenantID:  tenantID,
+			Category:  cleanCategory,
+			Provider:  cleanProvider,
+			Reference: reference,
+			CreatedAt: existing.CreatedAt,
+		}
+	} else {
+		cred = &Credential{
+			ID:        uuid.New(),
+			TenantID:  tenantID,
+			Category:  cleanCategory,
+			Provider:  cleanProvider,
+			Reference: reference,
+		}
 	}
 
 	if err := s.store.Save(ctx, cred); err != nil {

@@ -25,6 +25,8 @@ const (
 	ActionToolDelete         Action = "tool:delete"
 	ActionToolExecute        Action = "tool:execute"
 	ActionAuditRead          Action = "audit:read"
+	ActionReviewRead         Action = "review:read"
+	ActionReviewResolve      Action = "review:resolve"
 )
 
 // Policy defines the authorization policy matrix across all ARDA roles.
@@ -49,6 +51,8 @@ var Policy = map[Role]map[Action]bool{
 		ActionToolDelete:         false,
 		ActionToolExecute:        false,
 		ActionAuditRead:          false,
+		ActionReviewRead:         false,
+		ActionReviewResolve:      false,
 	},
 	RoleCompanyAdmin: {
 		ActionAgentCreate:        true,
@@ -70,6 +74,8 @@ var Policy = map[Role]map[Action]bool{
 		ActionToolDelete:         true,
 		ActionToolExecute:        true,
 		ActionAuditRead:          true,
+		ActionReviewRead:         true,
+		ActionReviewResolve:      true,
 	},
 	RoleAgentDeveloper: {
 		ActionAgentCreate:        true,
@@ -91,6 +97,8 @@ var Policy = map[Role]map[Action]bool{
 		ActionToolDelete:         false, // Cannot delete tool definitions
 		ActionToolExecute:        true,
 		ActionAuditRead:          true,
+		ActionReviewRead:         false,
+		ActionReviewResolve:      false,
 	},
 	RoleReviewer: {
 		ActionAgentCreate:        false,
@@ -112,6 +120,8 @@ var Policy = map[Role]map[Action]bool{
 		ActionToolDelete:         false,
 		ActionToolExecute:        false,
 		ActionAuditRead:          true,
+		ActionReviewRead:         true,
+		ActionReviewResolve:      true,
 	},
 }
 

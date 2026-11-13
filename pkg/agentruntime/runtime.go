@@ -283,8 +283,10 @@ var SupportedExecutionStatuses = map[ExecutionStatus]struct{}{
 
 // EscalationInfo carries structured escalation context when an agent execution cannot proceed autonomously.
 type EscalationInfo struct {
-	Reason string `json:"reason,omitempty"`
-	Target string `json:"target,omitempty"`
+	Reason         string         `json:"reason,omitempty"`
+	Target         string         `json:"target,omitempty"`
+	CaseID         string         `json:"case_id,omitempty"`
+	FrozenEvidence map[string]any `json:"frozen_evidence,omitempty"`
 }
 
 // ExecutionInput holds the ARDA execution context and user payload for an agent run.
@@ -292,6 +294,10 @@ type ExecutionInput struct {
 	TenantID       uuid.UUID      `json:"tenant_id"`
 	AgentID        uuid.UUID      `json:"agent_id"`
 	AgentVersionID uuid.UUID      `json:"agent_version_id"`
+	ExecutionID    string         `json:"execution_id,omitempty"`
+	Mode           string         `json:"mode,omitempty"`
+	ModeType       string         `json:"mode_type,omitempty"`
+	ExecutionMode  string         `json:"execution_mode,omitempty"`
 	Payload        map[string]any `json:"payload,omitempty"`
 }
 

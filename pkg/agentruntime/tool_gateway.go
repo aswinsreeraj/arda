@@ -16,6 +16,9 @@ type ToolExecutionRequest struct {
 	AgentID        uuid.UUID      `json:"agent_id"`
 	AgentVersionID uuid.UUID      `json:"agent_version_id"`
 	ExecutionID    string         `json:"execution_id"`
+	Mode           string         `json:"mode,omitempty"`
+	ModeType       string         `json:"mode_type,omitempty"`
+	ExecutionMode  string         `json:"execution_mode,omitempty"`
 	ToolName       string         `json:"tool_name"`
 	Arguments      map[string]any `json:"arguments"`
 }

@@ -120,14 +120,22 @@ func (m *ConnectionManager) RegisterInProcessServer(connID string, tenantID uuid
 	return nil
 }
 
-// GetConnection retrieves an active connection definition scoped strictly to the tenant.
+// GetConnection retrieves an active connection definition scoped strictly to the tenant,
+// falling back to a shared system-level connection (uuid.Nil) if present.
 func (m *ConnectionManager) GetConnection(ctx context.Context, tenantID uuid.UUID, id string) (*ConnectionDefinition, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	key := fmt.Sprintf("%s:%s", tenantID, id)
 	conn, ok := m.connections[key]
-	if !ok || conn.TenantID != tenantID {
+	if !ok {
+		nilKey := fmt.Sprintf("%s:%s", uuid.Nil, id)
+		if nilConn, nilOk := m.connections[nilKey]; nilOk {
+			conn = nilConn
+			ok = true
+		}
+	}
+	if !ok {
 		return nil, ErrConnectionNotFound
 	}
 	c := conn

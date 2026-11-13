@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/services/execution"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
@@ -45,6 +47,8 @@ type GatewayConfig struct {
 	CredentialHandler  *credentials.Handler
 	IdentityHandler    *identity.Handler
 	ToolsHandler       *ToolsHandler
+	AgentRuntime       agentruntime.AgentRuntime
+	ReviewClient       ardav1.ReviewServiceClient
 }
 
 // NewGateway creates and configures the API Gateway root http.Handler.
@@ -66,7 +70,11 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			})
 		}
 		if regAdapter != nil {
-			if svc, err := execution.NewService(cfg.TemporalClient, regAdapter); err == nil {
+			var execOpts []execution.Option
+			if cfg.AgentRuntime != nil {
+				execOpts = append(execOpts, execution.WithAgentRuntime(cfg.AgentRuntime))
+			}
+			if svc, err := execution.NewService(cfg.TemporalClient, regAdapter, execOpts...); err == nil {
 				execClient = proxy.NewInProcessExecutionClient(svc)
 			}
 		}
@@ -230,6 +238,28 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		},
 	)
 
+	// Human Review Service Routes
+	if cfg.ReviewClient != nil {
+		api.GET("/v1/reviews",
+			auth.RequireActionMiddleware(auth.ActionReviewRead, WriteErrorResponse),
+			func(c *gin.Context) {
+				handleListReviews(c, cfg.ReviewClient)
+			},
+		)
+		api.GET("/v1/reviews/:id",
+			auth.RequireActionMiddleware(auth.ActionReviewRead, WriteErrorResponse),
+			func(c *gin.Context) {
+				handleGetReview(c, cfg.ReviewClient)
+			},
+		)
+		api.POST("/v1/reviews/:id/resolve",
+			auth.RequireActionMiddleware(auth.ActionReviewResolve, WriteErrorResponse),
+			func(c *gin.Context) {
+				handleResolveReview(c, cfg.ReviewClient)
+			},
+		)
+	}
+
 	// Tool Registry and Governance
 	if cfg.ToolsHandler != nil {
 		api.POST("/v1/tools",
@@ -321,10 +351,14 @@ type neighborResponse struct {
 }
 
 type gateResponseBody struct {
-	Confidence double             `json:"confidence"`
-	Outcome    string             `json:"outcome"`
-	ReasonCode string             `json:"reason_code"`
-	Neighbors  []neighborResponse `json:"neighbors"`
+	Confidence           double             `json:"confidence"`
+	Outcome              string             `json:"outcome"`
+	ReasonCode           string             `json:"reason_code"`
+	Neighbors            []neighborResponse `json:"neighbors"`
+	RawScore             *float64           `json:"raw_score,omitempty"`
+	CalibratedConfidence *float64           `json:"calibrated_confidence,omitempty"`
+	IsCalibrated         bool               `json:"is_calibrated"`
+	CalibrationVersion   string             `json:"calibration_version,omitempty"`
 }
 
 type double = float64
@@ -395,10 +429,14 @@ func handleReliabilityGate(c *gin.Context, relSvc proxy.ReliabilityService) {
 	}
 
 	WriteJSON(c.Writer, http.StatusOK, gateResponseBody{
-		Confidence: grpcResp.GetConfidence(),
-		Outcome:    outcomeStr,
-		ReasonCode: grpcResp.GetReasonCode(),
-		Neighbors:  neighbors,
+		Confidence:           grpcResp.GetConfidence(),
+		Outcome:              outcomeStr,
+		ReasonCode:           grpcResp.GetReasonCode(),
+		Neighbors:            neighbors,
+		RawScore:             grpcResp.RawScore,
+		CalibratedConfidence: grpcResp.CalibratedConfidence,
+		IsCalibrated:         grpcResp.GetIsCalibrated(),
+		CalibrationVersion:   grpcResp.GetCalibrationVersion(),
 	})
 }
 
@@ -406,18 +444,25 @@ type executeRequestBody struct {
 	AgentVersionID *uuid.UUID           `json:"agent_version_id,omitempty"`
 	VersionID      *uuid.UUID           `json:"version_id,omitempty"`
 	Input          map[string]any       `json:"input,omitempty"`
+	InputPayload   map[string]any       `json:"input_payload,omitempty"`
 	ExecutionMode  domain.ExecutionMode `json:"execution_mode,omitempty"`
 	Mode           string               `json:"mode,omitempty"`
 	ExecutionID    string               `json:"execution_id,omitempty"`
 }
 
-// ExecuteAgentResponse represents the 202 Accepted response payload returned by agent execution dispatch.
+// ExecuteAgentResponse represents the response payload returned by agent execution dispatch.
 type ExecuteAgentResponse struct {
-	WorkflowID     string    `json:"workflow_id"`
-	RunID          string    `json:"run_id"`
-	AgentID        uuid.UUID `json:"agent_id"`
-	AgentVersionID uuid.UUID `json:"agent_version_id"`
-	Status         string    `json:"status"`
+	WorkflowID       string                       `json:"workflow_id,omitempty"`
+	RunID            string                       `json:"run_id,omitempty"`
+	AgentID          uuid.UUID                    `json:"agent_id"`
+	AgentVersionID   uuid.UUID                    `json:"agent_version_id"`
+	Status           string                       `json:"status"`
+	Mode             string                       `json:"mode,omitempty"`
+	Output           map[string]any               `json:"output,omitempty"`
+	StructuredOutput any                          `json:"structured_output,omitempty"`
+	Reason           string                       `json:"reason,omitempty"`
+	Escalation       *agentruntime.EscalationInfo `json:"escalation,omitempty"`
+	DurationMs       int64                        `json:"duration_ms,omitempty"`
 }
 
 func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regClient ardav1.AgentRegistryServiceClient, regSvc RegistryService) {
@@ -441,9 +486,13 @@ func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regCli
 			return
 		}
 	}
+	if len(body.Input) == 0 && len(body.InputPayload) > 0 {
+		body.Input = body.InputPayload
+	}
 
-	if strings.ToLower(strings.TrimSpace(body.Mode)) == "sync" {
-		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "synchronous execution mode is not supported; use 'async'")
+	mode := strings.ToLower(strings.TrimSpace(body.Mode))
+	if mode != "" && mode != "async" && mode != "sync" {
+		WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", fmt.Sprintf("unsupported mode: %q; supported modes are: async, sync", body.Mode))
 		return
 	}
 
@@ -524,7 +573,7 @@ func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regCli
 		AgentVersionID: verID,
 		Input:          body.Input,
 		ExecutionMode:  body.ExecutionMode,
-		Mode:           body.Mode,
+		Mode:           mode,
 		ExecutionID:    body.ExecutionID,
 	}
 
@@ -548,11 +597,22 @@ func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regCli
 	}
 
 	resp := ExecuteAgentResponse{
-		WorkflowID:     execResp.WorkflowID,
-		RunID:          execResp.RunID,
-		AgentID:        execResp.AgentID,
-		AgentVersionID: execResp.AgentVersionID,
-		Status:         execResp.Status,
+		WorkflowID:       execResp.WorkflowID,
+		RunID:            execResp.RunID,
+		AgentID:          execResp.AgentID,
+		AgentVersionID:   execResp.AgentVersionID,
+		Status:           execResp.Status,
+		Mode:             execResp.Mode,
+		Output:           execResp.Output,
+		StructuredOutput: execResp.StructuredOutput,
+		Reason:           execResp.Reason,
+		Escalation:       execResp.Escalation,
+		DurationMs:       execResp.DurationMs,
+	}
+
+	if execResp.Mode == "sync" {
+		WriteJSON(c.Writer, http.StatusOK, resp)
+		return
 	}
 
 	WriteJSON(c.Writer, http.StatusAccepted, resp)

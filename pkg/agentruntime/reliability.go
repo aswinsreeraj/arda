@@ -32,10 +32,14 @@ var SupportedReliabilityDecisions = map[ReliabilityDecision]struct{}{
 
 // ReliabilityEvaluation represents the structured result of consulting the ReliabilityService.
 type ReliabilityEvaluation struct {
-	Decision   ReliabilityDecision `json:"decision"`
-	Confidence float64             `json:"confidence,omitempty"`
-	ReasonCode string              `json:"reason_code,omitempty"`
-	Reason     string              `json:"reason,omitempty"`
+	Decision             ReliabilityDecision `json:"decision"`
+	Confidence           float64             `json:"confidence,omitempty"`
+	ReasonCode           string              `json:"reason_code,omitempty"`
+	Reason               string              `json:"reason,omitempty"`
+	RawScore             *float64            `json:"raw_score,omitempty"`
+	CalibratedConfidence *float64            `json:"calibrated_confidence,omitempty"`
+	IsCalibrated         bool                `json:"is_calibrated"`
+	CalibrationVersion   string              `json:"calibration_version,omitempty"`
 }
 
 // Validate verifies that the evaluation contains a valid decision.

@@ -361,6 +361,8 @@ func TestE2E_FullExecutionPath_StructuredDecision(t *testing.T) {
 	assert.True(t, auditEvents[0].Allowed)
 	assert.Equal(t, "get_transaction", auditEvents[0].ToolName)
 	assert.Equal(t, "tx_1001", auditEvents[0].SanitizedArguments["transaction_id"])
+	assert.Equal(t, "async", auditEvents[0].Mode)
+	assert.Equal(t, "durable", auditEvents[0].ModeType)
 }
 
 // -----------------------------------------------------------------------------

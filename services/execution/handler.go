@@ -97,6 +97,11 @@ func (h *Handler) SubmitExecutionHandler(c *gin.Context) {
 		return
 	}
 
+	if resp.Mode == "sync" {
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
 	c.JSON(http.StatusAccepted, resp)
 }
 

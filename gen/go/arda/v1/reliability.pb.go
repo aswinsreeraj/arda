@@ -80,7 +80,8 @@ type GateRequest struct {
 	// The agent's proposed outcome, compared against relevant
 	// reference evidence by the reliability evaluation.
 	ProposedDecision string `protobuf:"bytes,4,opt,name=proposed_decision,json=proposedDecision,proto3" json:"proposed_decision,omitempty"`
-	// Minimum acceptable calibrated confidence, in [0.0, 1.0].
+	// Minimum acceptable evaluation threshold, in [0.0, 1.0],
+	// compared against the gate's evaluation score.
 	// Invalid values must produce INVALID_ARGUMENT.
 	ReliabilityThreshold float64 `protobuf:"fixed64,5,opt,name=reliability_threshold,json=reliabilityThreshold,proto3" json:"reliability_threshold,omitempty"`
 	unknownFields        protoimpl.UnknownFields
@@ -154,7 +155,12 @@ func (x *GateRequest) GetReliabilityThreshold() float64 {
 
 type GateResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Calibrated confidence, in [0.0, 1.0].
+	// Primary gate confidence score, in [0.0, 1.0].
+	// Maintained for backward compatibility with existing Go runtime clients.
+	// In current operational mode (where production calibration is deferred),
+	// this strictly contains the uncalibrated raw reliability score heuristic
+	// (Agreement * Density * Coverage). Consumers requiring calibrated posterior
+	// probabilities must inspect calibrated_confidence (field 6) when is_calibrated (field 7) is true.
 	Confidence float64 `protobuf:"fixed64,1,opt,name=confidence,proto3" json:"confidence,omitempty"`
 	// PASS only when the threshold is met and sufficient
 	// supporting evidence exists. Otherwise, require review.
@@ -162,9 +168,23 @@ type GateResponse struct {
 	// Machine-readable explanation for the gate outcome.
 	ReasonCode string `protobuf:"bytes,3,opt,name=reason_code,json=reasonCode,proto3" json:"reason_code,omitempty"`
 	// Relevant reference examples supporting the evaluation.
-	Neighbors     []*ReferenceNeighbor `protobuf:"bytes,4,rep,name=neighbors,proto3" json:"neighbors,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Neighbors []*ReferenceNeighbor `protobuf:"bytes,4,rep,name=neighbors,proto3" json:"neighbors,omitempty"`
+	// Unambiguous raw reliability score, in [0.0, 1.0], computed as:
+	// raw_score = agreement * density_factor * coverage_factor.
+	// Always populated by the scoring engine.
+	RawScore *float64 `protobuf:"fixed64,5,opt,name=raw_score,json=rawScore,proto3,oneof" json:"raw_score,omitempty"`
+	// Calibrated confidence estimate P(decision is correct | raw_score) in [0.0, 1.0].
+	// Populated ONLY when an active, fitted calibration model is enabled (is_calibrated = true).
+	// Absent (null/unset) when calibration is disabled, deferred, or unavailable.
+	CalibratedConfidence *float64 `protobuf:"fixed64,6,opt,name=calibrated_confidence,json=calibratedConfidence,proto3,oneof" json:"calibrated_confidence,omitempty"`
+	// Indicates whether confidence calibration was performed by an active, fitted model.
+	// If false, calibrated_confidence is absent and confidence represents the raw score.
+	IsCalibrated bool `protobuf:"varint,7,opt,name=is_calibrated,json=isCalibrated,proto3" json:"is_calibrated,omitempty"`
+	// Lineage / model version identifier of the active calibrator (e.g., "platt-v1.0.0-seed100").
+	// Absent when is_calibrated is false.
+	CalibrationVersion *string `protobuf:"bytes,8,opt,name=calibration_version,json=calibrationVersion,proto3,oneof" json:"calibration_version,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GateResponse) Reset() {
@@ -223,6 +243,34 @@ func (x *GateResponse) GetNeighbors() []*ReferenceNeighbor {
 		return x.Neighbors
 	}
 	return nil
+}
+
+func (x *GateResponse) GetRawScore() float64 {
+	if x != nil && x.RawScore != nil {
+		return *x.RawScore
+	}
+	return 0
+}
+
+func (x *GateResponse) GetCalibratedConfidence() float64 {
+	if x != nil && x.CalibratedConfidence != nil {
+		return *x.CalibratedConfidence
+	}
+	return 0
+}
+
+func (x *GateResponse) GetIsCalibrated() bool {
+	if x != nil {
+		return x.IsCalibrated
+	}
+	return false
+}
+
+func (x *GateResponse) GetCalibrationVersion() string {
+	if x != nil && x.CalibrationVersion != nil {
+		return *x.CalibrationVersion
+	}
+	return ""
 }
 
 type ReferenceNeighbor struct {
@@ -295,7 +343,7 @@ const file_proto_arda_v1_reliability_proto_rawDesc = "" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12)\n" +
 	"\x10case_description\x18\x03 \x01(\tR\x0fcaseDescription\x12+\n" +
 	"\x11proposed_decision\x18\x04 \x01(\tR\x10proposedDecision\x123\n" +
-	"\x15reliability_threshold\x18\x05 \x01(\x01R\x14reliabilityThreshold\"\xb9\x01\n" +
+	"\x15reliability_threshold\x18\x05 \x01(\x01R\x14reliabilityThreshold\"\xb0\x03\n" +
 	"\fGateResponse\x12\x1e\n" +
 	"\n" +
 	"confidence\x18\x01 \x01(\x01R\n" +
@@ -303,7 +351,15 @@ const file_proto_arda_v1_reliability_proto_rawDesc = "" +
 	"\aoutcome\x18\x02 \x01(\x0e2\x14.arda.v1.GateOutcomeR\aoutcome\x12\x1f\n" +
 	"\vreason_code\x18\x03 \x01(\tR\n" +
 	"reasonCode\x128\n" +
-	"\tneighbors\x18\x04 \x03(\v2\x1a.arda.v1.ReferenceNeighborR\tneighbors\"{\n" +
+	"\tneighbors\x18\x04 \x03(\v2\x1a.arda.v1.ReferenceNeighborR\tneighbors\x12 \n" +
+	"\traw_score\x18\x05 \x01(\x01H\x00R\brawScore\x88\x01\x01\x128\n" +
+	"\x15calibrated_confidence\x18\x06 \x01(\x01H\x01R\x14calibratedConfidence\x88\x01\x01\x12#\n" +
+	"\ris_calibrated\x18\a \x01(\bR\fisCalibrated\x124\n" +
+	"\x13calibration_version\x18\b \x01(\tH\x02R\x12calibrationVersion\x88\x01\x01B\f\n" +
+	"\n" +
+	"_raw_scoreB\x18\n" +
+	"\x16_calibrated_confidenceB\x16\n" +
+	"\x14_calibration_version\"{\n" +
 	"\x11ReferenceNeighbor\x120\n" +
 	"\x14reference_example_id\x18\x01 \x01(\tR\x12referenceExampleId\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x1e\n" +
@@ -354,6 +410,7 @@ func file_proto_arda_v1_reliability_proto_init() {
 	if File_proto_arda_v1_reliability_proto != nil {
 		return
 	}
+	file_proto_arda_v1_reliability_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

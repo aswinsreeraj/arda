@@ -499,12 +499,36 @@ func TestAuditEvents_SuccessAndBlocked(t *testing.T) {
 	assert.False(t, blockedEvent.Allowed)
 	assert.Equal(t, toolgateway.DenialCodeSchemaValidationFailed, blockedEvent.DenialCode)
 	assert.Equal(t, "exec-audit-blocked", blockedEvent.ExecutionID)
+	assert.Equal(t, "async", blockedEvent.Mode)
+	assert.Equal(t, "durable", blockedEvent.ModeType)
 
 	// Check success event
 	successEvent := events[1]
 	assert.True(t, successEvent.Allowed)
 	assert.Equal(t, "exec-audit-success", successEvent.ExecutionID)
 	assert.Equal(t, tool.ID, successEvent.ToolID)
+	assert.Equal(t, "async", successEvent.Mode)
+	assert.Equal(t, "durable", successEvent.ModeType)
+
+	// Realtime sync invocation
+	_, err = gw.ExecuteTool(ctx, agentruntime.ToolExecutionRequest{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		ExecutionID:    "exec-audit-sync",
+		Mode:           "sync",
+		ModeType:       "realtime",
+		ExecutionMode:  "supervised",
+		ToolName:       tool.Name,
+		Arguments:      map[string]any{"city": "Tokyo"},
+	})
+	require.NoError(t, err)
+
+	eventsSync, err := store.ListAuditEvents(ctx, tenantID, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "sync", eventsSync[0].Mode)
+	assert.Equal(t, "realtime", eventsSync[0].ModeType)
+	assert.Equal(t, "supervised", eventsSync[0].ExecutionMode)
 }
 
 // 8. Repeated invocation idempotency
