@@ -17,9 +17,11 @@ var (
 	ErrUserNotFound            = errors.New("user not found")
 	ErrUserAlreadyExists       = errors.New("user with this email already exists")
 	ErrTenantNotFound          = errors.New("tenant not found")
-	ErrMembershipNotFound      = errors.New("tenant membership not found")
-	ErrMembershipAlreadyExists = errors.New("user already has a membership in this tenant")
-	ErrCannotRemoveLastAdmin   = errors.New("cannot remove or demote the last active tenant administrator")
+	ErrMembershipNotFound           = errors.New("tenant membership not found")
+	ErrMembershipAlreadyExists      = errors.New("user already has a membership in this tenant")
+	ErrCannotRemoveLastAdmin        = errors.New("cannot remove or demote the last active tenant administrator")
+	ErrInvalidOrExpiredVerification = errors.New("invalid or expired verification code")
+	ErrEmailNotVerified             = errors.New("email address has not been verified")
 )
 
 // Store defines persistence operations for user accounts, tenants, and memberships.
@@ -40,6 +42,10 @@ type Store interface {
 	UpdateMembership(ctx context.Context, membership *Membership) error
 	DeleteMembership(ctx context.Context, userID, tenantID uuid.UUID) error
 	CountActiveAdmins(ctx context.Context, tenantID uuid.UUID) (int64, error)
+
+	SaveVerification(ctx context.Context, email, otpCode, token string, expiresAt time.Time) error
+	VerifyOTPOrToken(ctx context.Context, email, otpCode, token string) (*User, error)
+	IsEmailVerified(ctx context.Context, email string) (bool, error)
 }
 
 // UserModel maps to the 'app_users' table.
@@ -121,6 +127,20 @@ func (m MembershipModel) ToDomain() *Membership {
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}
+}
+
+// EmailVerificationModel maps to the 'email_verifications' table.
+type EmailVerificationModel struct {
+	ID        uuid.UUID `gorm:"column:id;type:uuid;primaryKey"`
+	Email     string    `gorm:"column:email;type:text;not null"`
+	OTPCode   string    `gorm:"column:otp_code;type:text;not null"`
+	Token     string    `gorm:"column:token;type:text;not null"`
+	ExpiresAt time.Time `gorm:"column:expires_at;type:timestamptz;not null"`
+	CreatedAt time.Time `gorm:"column:created_at;type:timestamptz;not null"`
+}
+
+func (EmailVerificationModel) TableName() string {
+	return "email_verifications"
 }
 
 // PostgresStore implements Store backed by PostgreSQL via GORM.
@@ -514,22 +534,91 @@ func (s *PostgresStore) CountActiveAdmins(ctx context.Context, tenantID uuid.UUI
 	return count, nil
 }
 
+func (s *PostgresStore) SaveVerification(ctx context.Context, email, otpCode, token string, expiresAt time.Time) error {
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	model := EmailVerificationModel{
+		ID:        uuid.New(),
+		Email:     normEmail,
+		OTPCode:   otpCode,
+		Token:     token,
+		ExpiresAt: expiresAt,
+		CreatedAt: time.Now().UTC(),
+	}
+	return s.db.WithContext(ctx).Create(&model).Error
+}
+
+func (s *PostgresStore) VerifyOTPOrToken(ctx context.Context, email, otpCode, token string) (*User, error) {
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	token = strings.TrimSpace(token)
+	otpCode = strings.TrimSpace(otpCode)
+	now := time.Now().UTC()
+
+	var record EmailVerificationModel
+	query := s.db.WithContext(ctx).Where("expires_at > ?", now)
+
+	if token != "" {
+		query = query.Where("token = ?", token)
+	} else if normEmail != "" && otpCode != "" {
+		query = query.Where("email = ? AND otp_code = ?", normEmail, otpCode)
+	} else {
+		return nil, ErrInvalidOrExpiredVerification
+	}
+
+	if err := query.Order("created_at DESC").First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrInvalidOrExpiredVerification
+		}
+		return nil, fmt.Errorf("failed to query verification: %w", err)
+	}
+
+	// Fetch user and mark verified
+	var user UserModel
+	if err := s.db.WithContext(ctx).Where("LOWER(TRIM(email)) = ?", record.Email).First(&user).Error; err != nil {
+		return nil, ErrUserNotFound
+	}
+
+	user.EmailVerifiedAt = &now
+	user.UpdatedAt = now
+	if err := s.db.WithContext(ctx).Save(&user).Error; err != nil {
+		return nil, fmt.Errorf("failed to update user email verification: %w", err)
+	}
+
+	// Delete used verification records for this email
+	_ = s.db.WithContext(ctx).Where("LOWER(TRIM(email)) = ?", record.Email).Delete(&EmailVerificationModel{}).Error
+
+	return user.ToDomain(), nil
+}
+
+func (s *PostgresStore) IsEmailVerified(ctx context.Context, email string) (bool, error) {
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	var user UserModel
+	if err := s.db.WithContext(ctx).Where("LOWER(TRIM(email)) = ?", normEmail).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, ErrUserNotFound
+		}
+		return false, err
+	}
+	return user.EmailVerifiedAt != nil, nil
+}
+
 // MemoryStore provides a thread-safe in-memory Store implementation for testing.
 type MemoryStore struct {
-	mu          sync.RWMutex
-	users       map[uuid.UUID]*User
-	usersByMail map[string]uuid.UUID
-	tenants     map[uuid.UUID]*Tenant
-	memberships map[string]*Membership // key: userID:tenantID
+	mu            sync.RWMutex
+	users         map[uuid.UUID]*User
+	usersByMail   map[string]uuid.UUID
+	tenants       map[uuid.UUID]*Tenant
+	memberships   map[string]*Membership // key: userID:tenantID
+	verifications map[string]*EmailVerificationModel
 }
 
 // NewMemoryStore creates an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		users:       make(map[uuid.UUID]*User),
-		usersByMail: make(map[string]uuid.UUID),
-		tenants:     make(map[uuid.UUID]*Tenant),
-		memberships: make(map[string]*Membership),
+		users:         make(map[uuid.UUID]*User),
+		usersByMail:   make(map[string]uuid.UUID),
+		tenants:       make(map[uuid.UUID]*Tenant),
+		memberships:   make(map[string]*Membership),
+		verifications: make(map[string]*EmailVerificationModel),
 	}
 }
 
@@ -840,3 +929,84 @@ func (m *MemoryStore) CountActiveAdmins(ctx context.Context, tenantID uuid.UUID)
 	}
 	return count, nil
 }
+
+func (m *MemoryStore) SaveVerification(ctx context.Context, email, otpCode, token string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	model := &EmailVerificationModel{
+		ID:        uuid.New(),
+		Email:     normEmail,
+		OTPCode:   otpCode,
+		Token:     token,
+		ExpiresAt: expiresAt,
+		CreatedAt: time.Now().UTC(),
+	}
+	m.verifications[model.ID.String()] = model
+	return nil
+}
+
+func (m *MemoryStore) VerifyOTPOrToken(ctx context.Context, email, otpCode, token string) (*User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	token = strings.TrimSpace(token)
+	otpCode = strings.TrimSpace(otpCode)
+	now := time.Now().UTC()
+
+	var matched *EmailVerificationModel
+
+	for _, v := range m.verifications {
+		if v.ExpiresAt.Before(now) {
+			continue
+		}
+		if token != "" && v.Token == token {
+			if matched == nil || v.CreatedAt.After(matched.CreatedAt) {
+				matched = v
+			}
+		} else if token == "" && normEmail != "" && otpCode != "" && v.Email == normEmail && v.OTPCode == otpCode {
+			if matched == nil || v.CreatedAt.After(matched.CreatedAt) {
+				matched = v
+			}
+		}
+	}
+
+	if matched == nil {
+		return nil, ErrInvalidOrExpiredVerification
+	}
+
+	userID, exists := m.usersByMail[matched.Email]
+	if !exists {
+		return nil, ErrUserNotFound
+	}
+
+	user := m.users[userID]
+	user.EmailVerifiedAt = &now
+	user.UpdatedAt = now
+
+	// Delete used verification records for this email
+	for k, v := range m.verifications {
+		if v.Email == matched.Email {
+			delete(m.verifications, k)
+		}
+	}
+
+	copied := *user
+	return &copied, nil
+}
+
+func (m *MemoryStore) IsEmailVerified(ctx context.Context, email string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	userID, exists := m.usersByMail[normEmail]
+	if !exists {
+		return false, ErrUserNotFound
+	}
+	u := m.users[userID]
+	return u.EmailVerifiedAt != nil, nil
+}
+

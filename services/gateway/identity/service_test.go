@@ -272,3 +272,129 @@ func TestTenantAndMembershipManagement(t *testing.T) {
 		t.Fatalf("expected permission denied for developer managing members, got %v", err)
 	}
 }
+
+type mockEmailSender struct {
+	lastTo      string
+	lastOTP     string
+	lastLink    string
+	inviteCalls int
+	otpCalls    int
+}
+
+func (m *mockEmailSender) SendInvitationEmail(to, inviterName, orgName, inviteLink string) error {
+	m.lastTo = to
+	m.lastLink = inviteLink
+	m.inviteCalls++
+	return nil
+}
+
+func (m *mockEmailSender) SendVerificationOTPEmail(to, otpCode, confirmLink string) error {
+	m.lastTo = to
+	m.lastOTP = otpCode
+	m.lastLink = confirmLink
+	m.otpCalls++
+	return nil
+}
+
+func (m *mockEmailSender) AppURL() string {
+	return "http://localhost:5174"
+}
+
+func TestEmailVerificationAndOTP(t *testing.T) {
+	svc, _, _ := setupTestService()
+	mailer := &mockEmailSender{}
+	svc.SetMailer(mailer)
+	svc.SetRequireVerification(true)
+
+	ctx := context.Background()
+
+	// 1. Register organization tenant
+	regResp, err := svc.RegisterTenant(ctx, identity.RegisterTenantRequest{
+		CompanyName: "Shield Inc",
+		AdminEmail:  "nick.fury@shield.gov",
+		Password:    "superSecretPassword123!",
+		DisplayName: "Nick Fury",
+	})
+	if err != nil {
+		t.Fatalf("unexpected registration error: %v", err)
+	}
+	if !regResp.RequiresVerification {
+		t.Fatalf("expected RequiresVerification to be true")
+	}
+	if regResp.AccessToken != "" {
+		t.Fatalf("expected empty access token when verification required, got %q", regResp.AccessToken)
+	}
+
+	// 2. Attempt login before verification -> must fail with ErrEmailNotVerified
+	_, err = svc.Login(ctx, identity.LoginRequest{
+		Email:    "nick.fury@shield.gov",
+		Password: "superSecretPassword123!",
+	})
+	if !errors.Is(err, identity.ErrEmailNotVerified) {
+		t.Fatalf("expected ErrEmailNotVerified, got %v", err)
+	}
+
+	// 3. Verify OTP with incorrect code -> fails
+	_, err = svc.VerifyEmail(ctx, identity.VerifyEmailRequest{
+		Email: "nick.fury@shield.gov",
+		Code:  "999999",
+	})
+	if !errors.Is(err, identity.ErrInvalidOrExpiredVerification) {
+		t.Fatalf("expected ErrInvalidOrExpiredVerification for bad OTP, got %v", err)
+	}
+
+	// 4. Trigger resend verification
+	err = svc.ResendVerification(ctx, "nick.fury@shield.gov")
+	if err != nil {
+		t.Fatalf("unexpected resend verification error: %v", err)
+	}
+
+	// Wait briefly for async mailer call
+	time.Sleep(50 * time.Millisecond)
+
+	if mailer.lastOTP == "" {
+		t.Fatalf("expected mailer to capture OTP code")
+	}
+
+	// 5. Verify OTP with correct code
+	verifiedUser, err := svc.VerifyEmail(ctx, identity.VerifyEmailRequest{
+		Email: "nick.fury@shield.gov",
+		Code:  mailer.lastOTP,
+	})
+	if err != nil {
+		t.Fatalf("failed to verify email with valid OTP: %v", err)
+	}
+	if verifiedUser.Email != "nick.fury@shield.gov" {
+		t.Fatalf("expected verified email to match, got %s", verifiedUser.Email)
+	}
+
+	// 6. Login now succeeds
+	loginResp, err := svc.Login(ctx, identity.LoginRequest{
+		Email:    "nick.fury@shield.gov",
+		Password: "superSecretPassword123!",
+	})
+	if err != nil {
+		t.Fatalf("login failed after verification: %v", err)
+	}
+	if loginResp.AccessToken == "" {
+		t.Fatalf("expected non-empty access token after verification")
+	}
+
+	// 7. Invite a team member
+	adminCaller := auth.Identity{
+		UserID:   loginResp.User.ID.String(),
+		TenantID: regResp.Tenant.ID,
+		Role:     auth.RoleCompanyAdmin,
+	}
+	invResp, err := svc.InviteTenantMember(ctx, adminCaller, regResp.Tenant.ID, identity.InviteMemberRequest{
+		Email: "maria.hill@shield.gov",
+		Role:  auth.RoleAgentDeveloper,
+	})
+	if err != nil {
+		t.Fatalf("unexpected invite member error: %v", err)
+	}
+	if invResp.Status != "invited" {
+		t.Fatalf("expected status 'invited', got %s", invResp.Status)
+	}
+}
+

@@ -44,7 +44,7 @@ func TestClient_MockSendWhenUnconfigured(t *testing.T) {
 		t.Fatalf("expected nil error on unconfigured dev mock send, got: %v", err)
 	}
 
-	err = client.SendVerificationOTPEmail("user@example.com", "849201")
+	err = client.SendVerificationOTPEmail("user@example.com", "849201", "http://localhost:5174/verify?token=abc&email=user@example.com")
 	if err != nil {
 		t.Fatalf("expected nil error on unconfigured dev mock send, got: %v", err)
 	}

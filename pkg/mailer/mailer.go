@@ -81,6 +81,12 @@ func (c *Client) IsConfigured() bool {
 	return c.config.Username != "" && c.config.Password != ""
 }
 
+// AppURL returns the configured base frontend application URL.
+func (c *Client) AppURL() string {
+	return c.config.AppURL
+}
+
+
 // SendRaw dispatches an email message using Mailtrap SMTP.
 // If Mailtrap credentials are not configured, it logs the outgoing email for local inspection without failing.
 func (c *Client) SendRaw(to, subject, htmlBody string) error {
@@ -130,8 +136,8 @@ func (c *Client) SendInvitationEmail(to, inviterName, orgName, inviteLink string
 	return c.SendRaw(to, subject, html)
 }
 
-// SendVerificationOTPEmail sends an OTP verification code for email verification.
-func (c *Client) SendVerificationOTPEmail(to, otpCode string) error {
+// SendVerificationOTPEmail sends an OTP verification code and confirmation link for email verification.
+func (c *Client) SendVerificationOTPEmail(to, otpCode, confirmLink string) error {
 	subject := fmt.Sprintf("Your ARDA Verification Code: %s", otpCode)
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
@@ -140,18 +146,21 @@ func (c *Client) SendVerificationOTPEmail(to, otpCode string) error {
   <div style="max-width: 540px; margin: 0 auto; background: #161616; border: 1px solid #2a2a2a; border-radius: 12px; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
     <div style="font-size: 18px; font-weight: bold; letter-spacing: 0.1em; color: #ffffff; margin-bottom: 24px;">ΛRDΛ <span style="font-size: 12px; color: #3b82f6; font-weight: normal; margin-left: 8px;">SECURITY &amp; GOVERNANCE</span></div>
     <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px 0; color: #f3f4f6;">Verify Your Email Address</h2>
-    <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin: 0 0 24px 0;">
-      Use the one-time passcode (OTP) below to complete your verification and secure your account. This code is valid for 10 minutes.
+    <p style="color: #9ca3af; font-size: 14px; line-height: 1.6; margin: 0 0 20px 0;">
+      Use the one-time passcode (OTP) below to complete your registration, or click the confirmation button. This code is valid for 15 minutes.
     </p>
     <div style="background: #101010; border: 1px dashed #3b82f6; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0;">
       <span style="font-family: monospace; font-size: 32px; font-weight: bold; letter-spacing: 0.25em; color: #60a5fa;">%s</span>
     </div>
-    <p style="color: #6b7280; font-size: 12px; line-height: 1.5; margin: 24px 0 0 0; border-top: 1px solid #262626; pt: 16px;">
-      If you did not request this verification code, please disregard this email.
+    <div style="text-align: center; margin: 28px 0 16px 0;">
+      <a href="%s" style="background-color: #2563eb; color: #ffffff; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 500; font-size: 14px; display: inline-block;">Confirm Email Address &rarr;</a>
+    </div>
+    <p style="color: #6b7280; font-size: 12px; line-height: 1.5; margin: 24px 0 0 0; border-top: 1px solid #262626; padding-top: 16px;">
+      Direct link: <a href="%s" style="color: #3b82f6; word-break: break-all;">%s</a>
     </p>
   </div>
 </body>
-</html>`, subject, otpCode)
+</html>`, subject, otpCode, confirmLink, confirmLink, confirmLink)
 
 	return c.SendRaw(to, subject, html)
 }

@@ -111,11 +111,15 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		publicAuth.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
 		publicAuth.POST("/register", cfg.IdentityHandler.RegisterHandler)
 		publicAuth.POST("/login", cfg.IdentityHandler.LoginHandler)
+		publicAuth.POST("/verify-email", cfg.IdentityHandler.VerifyEmailHandler)
+		publicAuth.GET("/verify-email", cfg.IdentityHandler.VerifyEmailGetHandler)
+		publicAuth.POST("/resend-verification", cfg.IdentityHandler.ResendVerificationHandler)
 
 		publicTenants := router.Group("/api/v1/tenants")
 		publicTenants.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
 		publicTenants.POST("/register", cfg.IdentityHandler.RegisterTenantHandler)
 	}
+
 
 	// Protected API route group
 	api := router.Group("/api")
@@ -303,6 +307,10 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		api.POST("/v1/tenants/:tenantId/members",
 			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
 			cfg.IdentityHandler.AddTenantMemberHandler,
+		)
+		api.POST("/v1/tenants/:tenantId/invites",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.InviteTenantMemberHandler,
 		)
 		api.GET("/v1/tenants/:tenantId/members",
 			auth.RequireActionMiddleware(auth.ActionTenantMemberRead, WriteErrorResponse),

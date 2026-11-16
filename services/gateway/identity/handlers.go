@@ -129,10 +129,15 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 			h.writeErr(c.Writer, http.StatusForbidden, "ACCOUNT_DISABLED", "user account is disabled")
 			return
 		}
+		if errors.Is(err, ErrEmailNotVerified) {
+			h.writeErr(c.Writer, http.StatusForbidden, "EMAIL_NOT_VERIFIED", "email address has not been verified. please verify your email using the OTP or confirmation link.")
+			return
+		}
 		if errors.Is(err, ErrNoActiveMembership) {
 			h.writeErr(c.Writer, http.StatusForbidden, "NO_ACTIVE_MEMBERSHIP", "user has no active tenant memberships")
 			return
 		}
+
 		if errors.Is(err, ErrUnauthorizedTenant) {
 			h.writeErr(c.Writer, http.StatusForbidden, "UNAUTHORIZED_TENANT", "unauthorized or inactive membership for requested tenant")
 			return
@@ -460,3 +465,119 @@ func (h *Handler) DeleteUserHandler(c *gin.Context) {
 	c.Params = append(c.Params, gin.Param{Key: "tenantId", Value: identity.TenantID.String()})
 	h.DeleteTenantMemberHandler(c)
 }
+
+// VerifyEmailHandler handles POST /api/v1/auth/verify-email
+func (h *Handler) VerifyEmailHandler(c *gin.Context) {
+	var req VerifyEmailRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+		return
+	}
+
+	user, err := h.svc.VerifyEmail(c.Request.Context(), req)
+	if err != nil {
+		if errors.Is(err, ErrInvalidOrExpiredVerification) {
+			h.writeErr(c.Writer, http.StatusBadRequest, "INVALID_VERIFICATION_CODE", "invalid or expired verification code")
+			return
+		}
+		if errors.Is(err, ErrUserNotFound) {
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "user not found")
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"verified": true,
+		"message":  "Email verified successfully. You can now sign in.",
+		"user":     user,
+	})
+}
+
+// VerifyEmailGetHandler handles GET /api/v1/auth/verify-email?token=...&email=...
+func (h *Handler) VerifyEmailGetHandler(c *gin.Context) {
+	token := c.Query("token")
+	email := c.Query("email")
+
+	if token == "" {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "token query parameter is required")
+		return
+	}
+
+	user, err := h.svc.VerifyEmail(c.Request.Context(), VerifyEmailRequest{
+		Email: email,
+		Token: token,
+	})
+	if err != nil {
+		if errors.Is(err, ErrInvalidOrExpiredVerification) {
+			h.writeErr(c.Writer, http.StatusBadRequest, "INVALID_VERIFICATION_CODE", "invalid or expired verification token")
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"verified": true,
+		"message":  "Email verified successfully. You can now sign in.",
+		"user":     user,
+	})
+}
+
+// ResendVerificationHandler handles POST /api/v1/auth/resend-verification
+func (h *Handler) ResendVerificationHandler(c *gin.Context) {
+	var req ResendVerificationRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+		return
+	}
+
+	if err := h.svc.ResendVerification(c.Request.Context(), req.Email); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"sent":    true,
+		"message": "Verification code dispatched if account exists and is unverified.",
+	})
+}
+
+// InviteTenantMemberHandler handles POST /api/v1/tenants/:tenantId/invites
+func (h *Handler) InviteTenantMemberHandler(c *gin.Context) {
+	identity, ok := h.getIdentity(c)
+	if !ok {
+		return
+	}
+
+	tenantIDStr := c.Param("tenantId")
+	tenantID, err := uuid.Parse(tenantIDStr)
+	if err != nil || tenantID == uuid.Nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid tenantId parameter")
+		return
+	}
+
+	var req InviteMemberRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+		return
+	}
+
+	resp, err := h.svc.InviteTenantMember(c.Request.Context(), identity, tenantID, req)
+	if err != nil {
+		if errors.Is(err, ErrPermissionDenied) {
+			h.writeErr(c.Writer, http.StatusForbidden, "PERMISSION_DENIED", "only tenant administrators can invite members")
+			return
+		}
+		if errors.Is(err, ErrInvalidRole) || errors.Is(err, ErrCannotAssignSuperAdmin) || errors.Is(err, ErrInvalidEmail) {
+			h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusCreated, resp)
+}
+

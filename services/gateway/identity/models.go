@@ -112,12 +112,32 @@ type RegisterTenantRequest struct {
 
 // RegisterTenantResponse represents the combined tenant + admin registration response.
 type RegisterTenantResponse struct {
-	Tenant      Tenant     `json:"tenant"`
-	User        SafeUser   `json:"user"`
-	Membership  Membership `json:"membership"`
-	AccessToken string     `json:"access_token"`
-	TokenType   string     `json:"token_type"`
-	ExpiresIn   int64      `json:"expires_in"`
+	Tenant               Tenant     `json:"tenant"`
+	User                 SafeUser   `json:"user"`
+	Membership           Membership `json:"membership"`
+	RequiresVerification bool       `json:"requires_verification"`
+	Message              string     `json:"message"`
+	AccessToken          string     `json:"access_token,omitempty"`
+	TokenType            string     `json:"token_type,omitempty"`
+	ExpiresIn            int64      `json:"expires_in,omitempty"`
+}
+
+// VerifyEmailRequest represents input to verify email via OTP code or token.
+type VerifyEmailRequest struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+	Token string `json:"token"`
+}
+
+// VerifyEmailResponse represents the outcome of an email verification attempt.
+type VerifyEmailResponse struct {
+	Verified bool   `json:"verified"`
+	Message  string `json:"message"`
+}
+
+// ResendVerificationRequest represents a request to resend a verification code.
+type ResendVerificationRequest struct {
+	Email string `json:"email"`
 }
 
 // LoginRequest represents credentials submitted for authentication.
@@ -156,6 +176,22 @@ type AddMemberRequest struct {
 	Email  string    `json:"email,omitempty"`
 	Role   auth.Role `json:"role"`
 }
+
+// InviteMemberRequest represents parameters to invite a new user to a tenant.
+type InviteMemberRequest struct {
+	Email string    `json:"email"`
+	Role  auth.Role `json:"role"`
+}
+
+// InviteMemberResponse represents the response when an invitation email has been sent.
+type InviteMemberResponse struct {
+	Email      string    `json:"email"`
+	Role       auth.Role `json:"role"`
+	Status     string    `json:"status"`
+	InviteLink string    `json:"invite_link,omitempty"`
+	Message    string    `json:"message"`
+}
+
 
 // UpdateMemberRequest represents updates to a member's role or status.
 type UpdateMemberRequest struct {

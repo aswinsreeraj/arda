@@ -2,9 +2,13 @@ package identity
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/mail"
+	"net/url"
 	"strings"
 	"time"
 
@@ -25,6 +29,14 @@ var (
 	ErrInvalidRole            = errors.New("invalid membership role")
 )
 
+
+// EmailSender defines the interface for delivering verification and notification emails.
+type EmailSender interface {
+	SendInvitationEmail(to, inviterName, orgName, inviteLink string) error
+	SendVerificationOTPEmail(to, otpCode, confirmLink string) error
+	AppURL() string
+}
+
 // TokenIssuer defines the contract for issuing access JWT tokens.
 type TokenIssuer interface {
 	IssueToken(id auth.Identity, ttl time.Duration) (string, error)
@@ -32,9 +44,11 @@ type TokenIssuer interface {
 
 // Service provides identity, authentication, and tenant membership operations.
 type Service struct {
-	store       Store
-	tokenIssuer TokenIssuer
-	tokenTTL    time.Duration
+	store               Store
+	tokenIssuer         TokenIssuer
+	tokenTTL            time.Duration
+	requireVerification bool
+	mailer              EmailSender
 }
 
 // NewService creates a new identity Service.
@@ -46,12 +60,40 @@ func NewService(store Store, tokenIssuer TokenIssuer) *Service {
 	}
 }
 
+// SetRequireVerification configures whether user signup requires OTP/email verification.
+func (s *Service) SetRequireVerification(req bool) {
+	s.requireVerification = req
+}
+
+// SetMailer sets the email delivery client for verification and invitations.
+func (s *Service) SetMailer(m EmailSender) {
+	s.mailer = m
+}
+
 // SetTokenTTL configures the access token lifetime.
 func (s *Service) SetTokenTTL(ttl time.Duration) {
 	if ttl > 0 {
 		s.tokenTTL = ttl
 	}
 }
+
+func generateOTP() (string, error) {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	num := binary.BigEndian.Uint32(b[:]) % 1000000
+	return fmt.Sprintf("%06d", num), nil
+}
+
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 
 // Register creates a new user account with a secure password hash.
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (*SafeUser, error) {
@@ -98,6 +140,33 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*SafeUser,
 		}
 		if _, _, err := s.store.CreateTenantWithAdmin(ctx, tenant, user.ID); err != nil {
 			return nil, fmt.Errorf("failed to provision organization: %w", err)
+		}
+	}
+
+	if s.requireVerification {
+		otp, err := generateOTP()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate verification OTP: %w", err)
+		}
+		token, err := generateToken()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate verification token: %w", err)
+		}
+
+		expiresAt := time.Now().UTC().Add(24 * time.Hour)
+		if err := s.store.SaveVerification(ctx, user.Email, otp, token, expiresAt); err != nil {
+			return nil, fmt.Errorf("failed to save email verification: %w", err)
+		}
+
+		if s.mailer != nil {
+			appURL := "http://localhost:5174"
+			if s.mailer.AppURL() != "" {
+				appURL = s.mailer.AppURL()
+			}
+			confirmLink := fmt.Sprintf("%s/verify?token=%s&email=%s", appURL, token, url.QueryEscape(user.Email))
+			go func() {
+				_ = s.mailer.SendVerificationOTPEmail(user.Email, otp, confirmLink)
+			}()
 		}
 	}
 
@@ -161,6 +230,41 @@ func (s *Service) RegisterTenant(ctx context.Context, req RegisterTenantRequest)
 		return nil, err
 	}
 
+	if s.requireVerification {
+		otp, err := generateOTP()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate verification OTP: %w", err)
+		}
+		token, err := generateToken()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate verification token: %w", err)
+		}
+
+		expiresAt := time.Now().UTC().Add(24 * time.Hour)
+		if err := s.store.SaveVerification(ctx, user.Email, otp, token, expiresAt); err != nil {
+			return nil, fmt.Errorf("failed to save email verification: %w", err)
+		}
+
+		if s.mailer != nil {
+			appURL := "http://localhost:5174"
+			if s.mailer.AppURL() != "" {
+				appURL = s.mailer.AppURL()
+			}
+			confirmLink := fmt.Sprintf("%s/verify?token=%s&email=%s", appURL, token, url.QueryEscape(user.Email))
+			go func() {
+				_ = s.mailer.SendVerificationOTPEmail(user.Email, otp, confirmLink)
+			}()
+		}
+
+		return &RegisterTenantResponse{
+			Tenant:               *createdTenant,
+			User:                 createdUser.ToSafeUser(),
+			Membership:           *createdMem,
+			RequiresVerification: true,
+			Message:              "Verification code sent to your email. Please verify before signing in.",
+		}, nil
+	}
+
 	identity := auth.Identity{
 		UserID:   createdUser.ID.String(),
 		TenantID: createdTenant.ID,
@@ -204,6 +308,11 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		return nil, ErrInvalidCredentials
 	}
+
+	if s.requireVerification && !user.IsSuperAdmin && user.EmailVerifiedAt == nil {
+		return nil, ErrEmailNotVerified
+	}
+
 
 	var activeTenantID uuid.UUID
 	var resolvedRole auth.Role
@@ -538,3 +647,138 @@ func validateEmail(email string) error {
 	}
 	return nil
 }
+
+// VerifyEmail verifies an account via OTP code or confirmation token.
+func (s *Service) VerifyEmail(ctx context.Context, req VerifyEmailRequest) (*SafeUser, error) {
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	code := strings.TrimSpace(req.Code)
+	token := strings.TrimSpace(req.Token)
+
+	if token == "" && (email == "" || code == "") {
+		return nil, ErrInvalidOrExpiredVerification
+	}
+
+	user, err := s.store.VerifyOTPOrToken(ctx, email, code, token)
+	if err != nil {
+		return nil, err
+	}
+	safe := user.ToSafeUser()
+	return &safe, nil
+}
+
+// ResendVerification generates a new OTP/token and dispatches a verification email.
+func (s *Service) ResendVerification(ctx context.Context, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if err := validateEmail(email); err != nil {
+		return err
+	}
+
+	user, err := s.store.GetUserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			// Don't leak whether the account exists
+			return nil
+		}
+		return err
+	}
+
+	if user.EmailVerifiedAt != nil {
+		return errors.New("email is already verified")
+	}
+
+	otp, err := generateOTP()
+	if err != nil {
+		return fmt.Errorf("failed to generate verification OTP: %w", err)
+	}
+	token, err := generateToken()
+	if err != nil {
+		return fmt.Errorf("failed to generate verification token: %w", err)
+	}
+
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	if err := s.store.SaveVerification(ctx, user.Email, otp, token, expiresAt); err != nil {
+		return fmt.Errorf("failed to save email verification: %w", err)
+	}
+
+	if s.mailer != nil {
+		appURL := "http://localhost:5174"
+		if s.mailer.AppURL() != "" {
+			appURL = s.mailer.AppURL()
+		}
+		confirmLink := fmt.Sprintf("%s/verify?token=%s&email=%s", appURL, token, url.QueryEscape(user.Email))
+		go func() {
+			_ = s.mailer.SendVerificationOTPEmail(user.Email, otp, confirmLink)
+		}()
+	}
+
+	return nil
+}
+
+// InviteTenantMember dispatches an invitation email with an invitation link to the requested user.
+func (s *Service) InviteTenantMember(ctx context.Context, caller auth.Identity, tenantID uuid.UUID, req InviteMemberRequest) (*InviteMemberResponse, error) {
+	if err := s.checkTenantAdminAuth(caller, tenantID); err != nil {
+		return nil, err
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if err := validateEmail(email); err != nil {
+		return nil, err
+	}
+
+	if req.Role == "" {
+		req.Role = auth.RoleAgentDeveloper
+	}
+
+	if req.Role == auth.RoleSuperAdmin {
+		return nil, ErrCannotAssignSuperAdmin
+	}
+	if _, ok := auth.ValidRoles[req.Role]; !ok {
+		return nil, ErrInvalidRole
+	}
+
+	tenant, err := s.store.GetTenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	inviterName := "Organization Admin"
+	if callerUUID, err := uuid.Parse(caller.UserID); err == nil {
+		if inviterUser, err := s.store.GetUserByID(ctx, callerUUID); err == nil && inviterUser != nil {
+			if inviterUser.DisplayName != "" {
+				inviterName = inviterUser.DisplayName
+			} else {
+				inviterName = inviterUser.Email
+			}
+		}
+	}
+
+	inviteToken, _ := generateToken()
+	appURL := "http://localhost:5174"
+	if s.mailer != nil && s.mailer.AppURL() != "" {
+		appURL = s.mailer.AppURL()
+	}
+
+	inviteLink := fmt.Sprintf("%s/invite?email=%s&org=%s&role=%s&invitedBy=%s&token=%s",
+		appURL,
+		url.QueryEscape(email),
+		url.QueryEscape(tenant.Name),
+		url.QueryEscape(string(req.Role)),
+		url.QueryEscape(inviterName),
+		inviteToken,
+	)
+
+	if s.mailer != nil {
+		go func() {
+			_ = s.mailer.SendInvitationEmail(email, inviterName, tenant.Name, inviteLink)
+		}()
+	}
+
+	return &InviteMemberResponse{
+		Email:      email,
+		Role:       req.Role,
+		Status:     "invited",
+		InviteLink: inviteLink,
+		Message:    fmt.Sprintf("Invitation sent to %s via Mailtrap", email),
+	}, nil
+}
+

@@ -13,6 +13,7 @@ import (
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
+	"github.com/aswinsreeraj/arda/pkg/mailer"
 	"github.com/aswinsreeraj/arda/pkg/mcp"
 	"github.com/aswinsreeraj/arda/pkg/mcp/simulator"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
@@ -246,7 +247,11 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		identStore = identity.NewMemoryStore()
 	}
 	identSvc := identity.NewService(identStore, jwtValidator)
+	mailClient := mailer.NewClient(mailer.LoadConfigFromEnv())
+	identSvc.SetMailer(mailClient)
+	identSvc.SetRequireVerification(true)
 	identHandler := identity.NewHandler(identSvc, gatewayhttp.WriteErrorResponse)
+
 
 	var grpcClient ardav1.AgentRegistryServiceClient
 	if regClient != nil {
