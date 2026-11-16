@@ -326,7 +326,7 @@ func TestE2E_FullExecutionPath_StructuredDecision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ACCEPTED", execResp.Status)
 	assert.Equal(t, env.VersionID, execResp.AgentVersionID)
-	assert.Equal(t, fmt.Sprintf("agent-exec-%s-exec-e2e-decision-1", env.AgentID), execResp.WorkflowID)
+	assert.Equal(t, fmt.Sprintf("tenant-%s-agent-%s-exec-e2e-decision-1", env.TenantID, env.AgentID), execResp.WorkflowID)
 
 	// 2. Verify Temporal workflow completed synchronously in test environment
 	require.NotNil(t, env.Dispatcher.lastEnv, "workflow environment must have run")

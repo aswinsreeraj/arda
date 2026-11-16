@@ -154,14 +154,14 @@ func NewService(dispatcher WorkflowDispatcher, registry RegistryClient, opts ...
 	return s, nil
 }
 
-// GenerateWorkflowID constructs a collision-safe, deterministic workflow identifier.
+// GenerateWorkflowID constructs a collision-safe, deterministic workflow identifier scoped by tenant.
 // If executionID is supplied by the caller (idempotency key), it is incorporated deterministically.
-func GenerateWorkflowID(agentID uuid.UUID, executionID string) string {
+func GenerateWorkflowID(tenantID, agentID uuid.UUID, executionID string) string {
 	cleaned := strings.TrimSpace(executionID)
 	if cleaned != "" {
-		return fmt.Sprintf("agent-exec-%s-%s", agentID, cleaned)
+		return fmt.Sprintf("tenant-%s-agent-%s-%s", tenantID, agentID, cleaned)
 	}
-	return fmt.Sprintf("agent-exec-%s-%s", agentID, uuid.New().String())
+	return fmt.Sprintf("tenant-%s-agent-%s-%s", tenantID, agentID, uuid.New().String())
 }
 
 // SubmitExecution authorizes the caller within their tenant context, verifies that the target agent version
@@ -344,7 +344,7 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		return nil, NewUpstreamUnavailableError("temporal workflow dispatcher is not configured", nil)
 	}
 
-	workflowID := GenerateWorkflowID(req.AgentID, req.ExecutionID)
+	workflowID := GenerateWorkflowID(identity.TenantID, req.AgentID, req.ExecutionID)
 
 	// Pin execution strictly to the validated version ID
 	wfInput := temporal.AgentExecutionInput{

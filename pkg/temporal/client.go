@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 )
 
@@ -88,6 +89,15 @@ func (c *Client) StartAgentExecutionWorkflow(ctx context.Context, workflowID str
 	opts := client.StartWorkflowOptions{
 		ID:        wID,
 		TaskQueue: c.config.TaskQueue,
+		Memo: map[string]interface{}{
+			"tenant_id": input.TenantID.String(),
+			"agent_id":  input.AgentID.String(),
+		},
+	}
+	if input.TenantID != uuid.Nil {
+		opts.SearchAttributes = map[string]interface{}{
+			"CustomKeywordField": input.TenantID.String(),
+		}
 	}
 
 	run, err := c.client.ExecuteWorkflow(ctx, opts, AgentExecutionWorkflow, input)

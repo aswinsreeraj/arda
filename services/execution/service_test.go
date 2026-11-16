@@ -464,7 +464,7 @@ func TestService_SubmitExecution_WorkflowIDGenerationAndCollision(t *testing.T) 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		expectedWfID := fmt.Sprintf("agent-exec-%s-custom-exec-456", agentID)
+		expectedWfID := fmt.Sprintf("tenant-%s-agent-%s-custom-exec-456", identity.TenantID, agentID)
 		if resp.WorkflowID != expectedWfID || dispatcher.lastWfID != expectedWfID {
 			t.Errorf("expected workflow ID %q, got %q", expectedWfID, resp.WorkflowID)
 		}
