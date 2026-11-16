@@ -198,3 +198,35 @@ type UpdateMemberRequest struct {
 	Role   auth.Role        `json:"role,omitempty"`
 	Status MembershipStatus `json:"status,omitempty"`
 }
+
+// Invitation represents an invited team member invitation record.
+type Invitation struct {
+	ID         uuid.UUID  `json:"id"`
+	TenantID   uuid.UUID  `json:"tenant_id"`
+	Email      string     `json:"email"`
+	Role       auth.Role  `json:"role"`
+	Token      string     `json:"token"`
+	InvitedBy  string     `json:"invited_by"`
+	Status     string     `json:"status"` // "pending", "accepted"
+	ExpiresAt  time.Time  `json:"expires_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+}
+
+// AcceptInviteRequest represents the payload when a user accepts an invitation.
+type AcceptInviteRequest struct {
+	Token    string `json:"token"`
+	FullName string `json:"full_name"`
+	Password string `json:"password"`
+}
+
+// AcceptInviteResponse represents the authenticated session returned upon accepting an invitation.
+type AcceptInviteResponse struct {
+	AccessToken    string    `json:"access_token"`
+	TokenType      string    `json:"token_type"`
+	ExpiresIn      int64     `json:"expires_in"`
+	User           SafeUser  `json:"user"`
+	ActiveTenantID uuid.UUID `json:"active_tenant_id"`
+	Role           auth.Role `json:"role"`
+}
+

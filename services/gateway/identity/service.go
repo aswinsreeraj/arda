@@ -753,6 +753,21 @@ func (s *Service) InviteTenantMember(ctx context.Context, caller auth.Identity, 
 	}
 
 	inviteToken, _ := generateToken()
+	inv := &Invitation{
+		ID:        uuid.New(),
+		TenantID:  tenantID,
+		Email:     email,
+		Role:      req.Role,
+		Token:     inviteToken,
+		InvitedBy: inviterName,
+		Status:    "pending",
+		ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.store.CreateInvitation(ctx, inv); err != nil {
+		return nil, fmt.Errorf("failed to persist invitation: %w", err)
+	}
+
 	appURL := "http://localhost:5174"
 	if s.mailer != nil && s.mailer.AppURL() != "" {
 		appURL = s.mailer.AppURL()
@@ -781,4 +796,53 @@ func (s *Service) InviteTenantMember(ctx context.Context, caller auth.Identity, 
 		Message:    fmt.Sprintf("Invitation sent to %s via Mailtrap", email),
 	}, nil
 }
+
+// AcceptInvitation verifies the token, creates the user account and active membership, and issues an access JWT.
+func (s *Service) AcceptInvitation(ctx context.Context, req AcceptInviteRequest) (*AcceptInviteResponse, error) {
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		return nil, errors.New("invitation token is required")
+	}
+
+	fullName := strings.TrimSpace(req.FullName)
+	if fullName == "" {
+		return nil, errors.New("full name is required")
+	}
+
+	password := req.Password
+	if len(password) < 8 || len(password) > 128 {
+		return nil, ErrWeakPassword
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	user, mem, tenant, err := s.store.AcceptInvitation(ctx, token, fullName, string(hash))
+	if err != nil {
+		return nil, err
+	}
+
+	identity := auth.Identity{
+		UserID:   user.ID.String(),
+		TenantID: tenant.ID,
+		Role:     mem.Role,
+	}
+
+	accessToken, err := s.tokenIssuer.IssueToken(identity, s.tokenTTL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to issue access token: %w", err)
+	}
+
+	return &AcceptInviteResponse{
+		AccessToken:    accessToken,
+		TokenType:      "Bearer",
+		ExpiresIn:      int64(s.tokenTTL.Seconds()),
+		User:           user.ToSafeUser(),
+		ActiveTenantID: tenant.ID,
+		Role:           mem.Role,
+	}, nil
+}
+
 

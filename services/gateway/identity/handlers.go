@@ -581,3 +581,44 @@ func (h *Handler) InviteTenantMemberHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, resp)
 }
 
+// AcceptInvitationHandler handles POST /api/v1/invitations/accept and /api/v1/auth/accept-invite
+func (h *Handler) AcceptInvitationHandler(c *gin.Context) {
+	var req AcceptInviteRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+		return
+	}
+
+	if req.Token == "" {
+		req.Token = c.Query("token")
+		if req.Token == "" {
+			req.Token = c.Param("token")
+		}
+	}
+
+	resp, err := h.svc.AcceptInvitation(c.Request.Context(), req)
+	if err != nil {
+		if errors.Is(err, ErrInvitationNotFound) {
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "invitation not found")
+			return
+		}
+		if errors.Is(err, ErrInvitationExpired) {
+			h.writeErr(c.Writer, http.StatusBadRequest, "INVITATION_EXPIRED", "invitation has expired")
+			return
+		}
+		if errors.Is(err, ErrInvitationAccepted) {
+			h.writeErr(c.Writer, http.StatusBadRequest, "INVITATION_ALREADY_ACCEPTED", "invitation has already been accepted")
+			return
+		}
+		if errors.Is(err, ErrWeakPassword) {
+			h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+

@@ -3,8 +3,10 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
 
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/identity"
@@ -396,5 +398,79 @@ func TestEmailVerificationAndOTP(t *testing.T) {
 	if invResp.Status != "invited" {
 		t.Fatalf("expected status 'invited', got %s", invResp.Status)
 	}
+
+	// 8. Verify member listing includes the invited user with status "invited"
+	members, err := svc.ListTenantMembers(ctx, adminCaller, regResp.Tenant.ID)
+	if err != nil {
+		t.Fatalf("failed to list tenant members: %v", err)
+	}
+	var invitedFound bool
+	for _, m := range members {
+		if m.Email == "maria.hill@shield.gov" {
+			invitedFound = true
+			if m.Status != identity.MembershipStatus("invited") {
+				t.Fatalf("expected invited status 'invited', got %s", m.Status)
+			}
+		}
+	}
+	if !invitedFound {
+		t.Fatalf("expected maria.hill@shield.gov to appear in tenant members")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if mailer.lastLink == "" {
+		t.Fatalf("expected mailer to record invite link")
+	}
+
+	// Extract token from invite link
+	token := mailer.lastLink[strings.Index(mailer.lastLink, "token=")+6:]
+
+
+	// 9. Accept the invitation
+	acceptResp, err := svc.AcceptInvitation(ctx, identity.AcceptInviteRequest{
+		Token:    token,
+		FullName: "Maria Hill",
+		Password: "HillSecurePassword2026!",
+	})
+	if err != nil {
+		t.Fatalf("failed to accept invitation: %v", err)
+	}
+	if acceptResp.AccessToken == "" {
+		t.Fatalf("expected access token on invitation acceptance")
+	}
+	if acceptResp.Role != auth.RoleAgentDeveloper {
+		t.Fatalf("expected role 'agent_developer', got %s", acceptResp.Role)
+	}
+
+	// 10. Verify member listing now shows status "active"
+	membersAfter, err := svc.ListTenantMembers(ctx, adminCaller, regResp.Tenant.ID)
+	if err != nil {
+		t.Fatalf("failed to list members after accept: %v", err)
+	}
+	var activeFound bool
+	for _, m := range membersAfter {
+		if m.Email == "maria.hill@shield.gov" {
+			activeFound = true
+			if m.Status != identity.MembershipStatusActive {
+				t.Fatalf("expected status 'active' after accept, got %s", m.Status)
+			}
+		}
+	}
+	if !activeFound {
+		t.Fatalf("expected maria.hill@shield.gov to remain in tenant members as active")
+	}
+
+	// 11. Invited user can now log in directly with their credentials
+	invitedLogin, err := svc.Login(ctx, identity.LoginRequest{
+		Email:    "maria.hill@shield.gov",
+		Password: "HillSecurePassword2026!",
+	})
+	if err != nil {
+		t.Fatalf("invited user login failed: %v", err)
+	}
+	if invitedLogin.AccessToken == "" {
+		t.Fatalf("expected non-empty access token for invited user login")
+	}
 }
+
 

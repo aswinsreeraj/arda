@@ -22,6 +22,9 @@ var (
 	ErrCannotRemoveLastAdmin        = errors.New("cannot remove or demote the last active tenant administrator")
 	ErrInvalidOrExpiredVerification = errors.New("invalid or expired verification code")
 	ErrEmailNotVerified             = errors.New("email address has not been verified")
+	ErrInvitationNotFound           = errors.New("invitation not found")
+	ErrInvitationExpired            = errors.New("invitation has expired")
+	ErrInvitationAccepted           = errors.New("invitation has already been accepted")
 )
 
 // Store defines persistence operations for user accounts, tenants, and memberships.
@@ -46,7 +49,12 @@ type Store interface {
 	SaveVerification(ctx context.Context, email, otpCode, token string, expiresAt time.Time) error
 	VerifyOTPOrToken(ctx context.Context, email, otpCode, token string) (*User, error)
 	IsEmailVerified(ctx context.Context, email string) (bool, error)
+
+	CreateInvitation(ctx context.Context, inv *Invitation) error
+	GetInvitationByToken(ctx context.Context, token string) (*Invitation, error)
+	AcceptInvitation(ctx context.Context, token, fullName, passwordHash string) (*User, *Membership, *Tenant, error)
 }
+
 
 // UserModel maps to the 'app_users' table.
 type UserModel struct {
@@ -142,6 +150,40 @@ type EmailVerificationModel struct {
 func (EmailVerificationModel) TableName() string {
 	return "email_verifications"
 }
+
+// InvitationModel maps to the 'invitations' table.
+type InvitationModel struct {
+	ID         uuid.UUID  `gorm:"column:id;type:uuid;primaryKey"`
+	TenantID   uuid.UUID  `gorm:"column:tenant_id;type:uuid;not null;index"`
+	Email      string     `gorm:"column:email;type:text;not null"`
+	Role       string     `gorm:"column:role;type:text;not null"`
+	Token      string     `gorm:"column:token;type:text;not null;uniqueIndex"`
+	InvitedBy  string     `gorm:"column:invited_by;type:text"`
+	Status     string     `gorm:"column:status;type:text;not null;default:'pending'"`
+	ExpiresAt  time.Time  `gorm:"column:expires_at;type:timestamptz;not null"`
+	CreatedAt  time.Time  `gorm:"column:created_at;type:timestamptz;not null"`
+	AcceptedAt *time.Time `gorm:"column:accepted_at;type:timestamptz"`
+}
+
+func (InvitationModel) TableName() string {
+	return "invitations"
+}
+
+func (m *InvitationModel) ToDomain() *Invitation {
+	return &Invitation{
+		ID:         m.ID,
+		TenantID:   m.TenantID,
+		Email:      m.Email,
+		Role:       auth.Role(m.Role),
+		Token:      m.Token,
+		InvitedBy:  m.InvitedBy,
+		Status:     m.Status,
+		ExpiresAt:  m.ExpiresAt,
+		CreatedAt:  m.CreatedAt,
+		AcceptedAt: m.AcceptedAt,
+	}
+}
+
 
 // PostgresStore implements Store backed by PostgreSQL via GORM.
 type PostgresStore struct {
@@ -491,8 +533,38 @@ func (s *PostgresStore) ListTenantMembers(ctx context.Context, tenantID uuid.UUI
 			CreatedAt:   r.CreatedAt,
 		}
 	}
+
+	var pendingInvs []InvitationModel
+	_ = s.db.WithContext(ctx).
+		Where("tenant_id = ? AND status = ? AND expires_at > ?", tenantID, "pending", time.Now().UTC()).
+		Order("created_at ASC").
+		Find(&pendingInvs).Error
+
+	for _, inv := range pendingInvs {
+		exists := false
+		for _, m := range members {
+			if strings.EqualFold(m.Email, inv.Email) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			members = append(members, MemberInfo{
+				ID:          inv.ID,
+				UserID:      uuid.Nil,
+				TenantID:    inv.TenantID,
+				Email:       inv.Email,
+				DisplayName: "Pending invite",
+				Role:        auth.Role(inv.Role),
+				Status:      MembershipStatus("invited"),
+				CreatedAt:   inv.CreatedAt,
+			})
+		}
+	}
+
 	return members, nil
 }
+
 
 func (s *PostgresStore) UpdateMembership(ctx context.Context, m *Membership) error {
 	m.UpdatedAt = time.Now().UTC()
@@ -601,6 +673,169 @@ func (s *PostgresStore) IsEmailVerified(ctx context.Context, email string) (bool
 	return user.EmailVerifiedAt != nil, nil
 }
 
+func (s *PostgresStore) CreateInvitation(ctx context.Context, inv *Invitation) error {
+	if inv.ID == uuid.Nil {
+		inv.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if inv.CreatedAt.IsZero() {
+		inv.CreatedAt = now
+	}
+	if inv.ExpiresAt.IsZero() {
+		inv.ExpiresAt = now.Add(7 * 24 * time.Hour)
+	}
+	if inv.Status == "" {
+		inv.Status = "pending"
+	}
+
+	model := InvitationModel{
+		ID:        inv.ID,
+		TenantID:  inv.TenantID,
+		Email:     strings.ToLower(strings.TrimSpace(inv.Email)),
+		Role:      string(inv.Role),
+		Token:     inv.Token,
+		InvitedBy: inv.InvitedBy,
+		Status:    inv.Status,
+		ExpiresAt: inv.ExpiresAt,
+		CreatedAt: inv.CreatedAt,
+	}
+
+	return s.db.WithContext(ctx).Create(&model).Error
+}
+
+func (s *PostgresStore) GetInvitationByToken(ctx context.Context, token string) (*Invitation, error) {
+	var model InvitationModel
+	err := s.db.WithContext(ctx).Where("token = ?", strings.TrimSpace(token)).First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrInvitationNotFound
+		}
+		return nil, fmt.Errorf("failed to get invitation by token: %w", err)
+	}
+	return model.ToDomain(), nil
+}
+
+func (s *PostgresStore) AcceptInvitation(ctx context.Context, token, fullName, passwordHash string) (*User, *Membership, *Tenant, error) {
+	var user *User
+	var membership *Membership
+	var tenant *Tenant
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var inv InvitationModel
+		if err := tx.Where("token = ?", strings.TrimSpace(token)).First(&inv).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrInvitationNotFound
+			}
+			return fmt.Errorf("failed to query invitation: %w", err)
+		}
+
+		if inv.Status == "accepted" {
+			return ErrInvitationAccepted
+		}
+
+		now := time.Now().UTC()
+		if inv.ExpiresAt.Before(now) {
+			return ErrInvitationExpired
+		}
+
+		// Retrieve tenant
+		var tModel TenantModel
+		if err := tx.Where("id = ?", inv.TenantID).First(&tModel).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrTenantNotFound
+			}
+			return fmt.Errorf("failed to find tenant: %w", err)
+		}
+		tenant = tModel.ToDomain()
+
+		normEmail := strings.ToLower(strings.TrimSpace(inv.Email))
+
+		// Check if user already exists
+		var uModel UserModel
+		userErr := tx.Where("LOWER(TRIM(email)) = ?", normEmail).First(&uModel).Error
+		if userErr != nil && !errors.Is(userErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to query user by email: %w", userErr)
+		}
+
+		if errors.Is(userErr, gorm.ErrRecordNotFound) {
+			// Create user
+			uModel = UserModel{
+				ID:              uuid.New(),
+				Email:           normEmail,
+				DisplayName:     strings.TrimSpace(fullName),
+				PasswordHash:    passwordHash,
+				Status:          string(UserStatusActive),
+				IsSuperAdmin:    false,
+				EmailVerifiedAt: &now,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			if err := tx.Create(&uModel).Error; err != nil {
+				return fmt.Errorf("failed to create invited user: %w", err)
+			}
+		} else {
+			// User exists, update password and mark email verified
+			uModel.PasswordHash = passwordHash
+			if strings.TrimSpace(fullName) != "" {
+				uModel.DisplayName = strings.TrimSpace(fullName)
+			}
+			if uModel.EmailVerifiedAt == nil {
+				uModel.EmailVerifiedAt = &now
+			}
+			uModel.UpdatedAt = now
+			if err := tx.Save(&uModel).Error; err != nil {
+				return fmt.Errorf("failed to update user: %w", err)
+			}
+		}
+		user = uModel.ToDomain()
+
+		// Upsert membership
+		var mModel MembershipModel
+		memErr := tx.Where("user_id = ? AND tenant_id = ?", user.ID, inv.TenantID).First(&mModel).Error
+		if memErr != nil && !errors.Is(memErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to query membership: %w", memErr)
+		}
+
+		if errors.Is(memErr, gorm.ErrRecordNotFound) {
+			mModel = MembershipModel{
+				ID:        uuid.New(),
+				UserID:    user.ID,
+				TenantID:  inv.TenantID,
+				Role:      inv.Role,
+				Status:    string(MembershipStatusActive),
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := tx.Create(&mModel).Error; err != nil {
+				return fmt.Errorf("failed to create tenant membership: %w", err)
+			}
+		} else {
+			mModel.Role = inv.Role
+			mModel.Status = string(MembershipStatusActive)
+			mModel.UpdatedAt = now
+			if err := tx.Save(&mModel).Error; err != nil {
+				return fmt.Errorf("failed to update membership: %w", err)
+			}
+		}
+		membership = mModel.ToDomain()
+
+		// Mark invitation accepted
+		inv.Status = "accepted"
+		inv.AcceptedAt = &now
+		if err := tx.Save(&inv).Error; err != nil {
+			return fmt.Errorf("failed to update invitation: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return user, membership, tenant, nil
+}
+
+
 // MemoryStore provides a thread-safe in-memory Store implementation for testing.
 type MemoryStore struct {
 	mu            sync.RWMutex
@@ -609,6 +844,7 @@ type MemoryStore struct {
 	tenants       map[uuid.UUID]*Tenant
 	memberships   map[string]*Membership // key: userID:tenantID
 	verifications map[string]*EmailVerificationModel
+	invitations   map[string]*InvitationModel
 }
 
 // NewMemoryStore creates an empty in-memory store.
@@ -619,8 +855,10 @@ func NewMemoryStore() *MemoryStore {
 		tenants:       make(map[uuid.UUID]*Tenant),
 		memberships:   make(map[string]*Membership),
 		verifications: make(map[string]*EmailVerificationModel),
+		invitations:   make(map[string]*InvitationModel),
 	}
 }
+
 
 func (m *MemoryStore) CreateUser(ctx context.Context, u *User) error {
 	m.mu.Lock()
@@ -886,8 +1124,34 @@ func (m *MemoryStore) ListTenantMembers(ctx context.Context, tenantID uuid.UUID)
 			})
 		}
 	}
+
+	for _, inv := range m.invitations {
+		if inv.TenantID == tenantID && inv.Status == "pending" && inv.ExpiresAt.After(time.Now().UTC()) {
+			exists := false
+			for _, item := range res {
+				if strings.EqualFold(item.Email, inv.Email) {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				res = append(res, MemberInfo{
+					ID:          inv.ID,
+					UserID:      uuid.Nil,
+					TenantID:    inv.TenantID,
+					Email:       inv.Email,
+					DisplayName: "Pending invite",
+					Role:        auth.Role(inv.Role),
+					Status:      MembershipStatus("invited"),
+					CreatedAt:   inv.CreatedAt,
+				})
+			}
+		}
+	}
+
 	return res, nil
 }
+
 
 func (m *MemoryStore) UpdateMembership(ctx context.Context, mem *Membership) error {
 	m.mu.Lock()
@@ -1009,4 +1273,132 @@ func (m *MemoryStore) IsEmailVerified(ctx context.Context, email string) (bool, 
 	u := m.users[userID]
 	return u.EmailVerifiedAt != nil, nil
 }
+
+func (m *MemoryStore) CreateInvitation(ctx context.Context, inv *Invitation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if inv.ID == uuid.Nil {
+		inv.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if inv.CreatedAt.IsZero() {
+		inv.CreatedAt = now
+	}
+	if inv.ExpiresAt.IsZero() {
+		inv.ExpiresAt = now.Add(7 * 24 * time.Hour)
+	}
+	if inv.Status == "" {
+		inv.Status = "pending"
+	}
+
+	model := &InvitationModel{
+		ID:        inv.ID,
+		TenantID:  inv.TenantID,
+		Email:     strings.ToLower(strings.TrimSpace(inv.Email)),
+		Role:      string(inv.Role),
+		Token:     inv.Token,
+		InvitedBy: inv.InvitedBy,
+		Status:    inv.Status,
+		ExpiresAt: inv.ExpiresAt,
+		CreatedAt: inv.CreatedAt,
+	}
+
+	m.invitations[inv.Token] = model
+	return nil
+}
+
+func (m *MemoryStore) GetInvitationByToken(ctx context.Context, token string) (*Invitation, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	inv, exists := m.invitations[strings.TrimSpace(token)]
+	if !exists {
+		return nil, ErrInvitationNotFound
+	}
+	return inv.ToDomain(), nil
+}
+
+func (m *MemoryStore) AcceptInvitation(ctx context.Context, token, fullName, passwordHash string) (*User, *Membership, *Tenant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	inv, exists := m.invitations[strings.TrimSpace(token)]
+	if !exists {
+		return nil, nil, nil, ErrInvitationNotFound
+	}
+
+	if inv.Status == "accepted" {
+		return nil, nil, nil, ErrInvitationAccepted
+	}
+
+	now := time.Now().UTC()
+	if inv.ExpiresAt.Before(now) {
+		return nil, nil, nil, ErrInvitationExpired
+	}
+
+	tenant, exists := m.tenants[inv.TenantID]
+	if !exists {
+		return nil, nil, nil, ErrTenantNotFound
+	}
+
+	normEmail := strings.ToLower(strings.TrimSpace(inv.Email))
+	userID, exists := m.usersByMail[normEmail]
+	var user *User
+	if !exists {
+		user = &User{
+			ID:              uuid.New(),
+			Email:           normEmail,
+			DisplayName:     strings.TrimSpace(fullName),
+			PasswordHash:    passwordHash,
+			Status:          UserStatusActive,
+			IsSuperAdmin:    false,
+			EmailVerifiedAt: &now,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		uCopy := *user
+		m.users[user.ID] = &uCopy
+		m.usersByMail[normEmail] = user.ID
+	} else {
+		user = m.users[userID]
+		user.PasswordHash = passwordHash
+		if strings.TrimSpace(fullName) != "" {
+			user.DisplayName = strings.TrimSpace(fullName)
+		}
+		if user.EmailVerifiedAt == nil {
+			user.EmailVerifiedAt = &now
+		}
+		user.UpdatedAt = now
+	}
+
+	memKey := fmt.Sprintf("%s:%s", user.ID, inv.TenantID)
+	membership, memExists := m.memberships[memKey]
+	if !memExists {
+		membership = &Membership{
+			ID:        uuid.New(),
+			UserID:    user.ID,
+			TenantID:  inv.TenantID,
+			Role:      auth.Role(inv.Role),
+			Status:    MembershipStatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		memCopy := *membership
+		m.memberships[memKey] = &memCopy
+	} else {
+		membership.Role = auth.Role(inv.Role)
+		membership.Status = MembershipStatusActive
+		membership.UpdatedAt = now
+	}
+
+	inv.Status = "accepted"
+	inv.AcceptedAt = &now
+
+	uRes := *user
+	mRes := *membership
+	tRes := *tenant
+	return &uRes, &mRes, &tRes, nil
+}
+
 

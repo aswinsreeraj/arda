@@ -114,8 +114,15 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		publicAuth.POST("/verify-email", cfg.IdentityHandler.VerifyEmailHandler)
 		publicAuth.GET("/verify-email", cfg.IdentityHandler.VerifyEmailGetHandler)
 		publicAuth.POST("/resend-verification", cfg.IdentityHandler.ResendVerificationHandler)
+		publicAuth.POST("/accept-invite", cfg.IdentityHandler.AcceptInvitationHandler)
+
+		publicInvs := router.Group("/api/v1/invitations")
+		publicInvs.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
+		publicInvs.POST("/accept", cfg.IdentityHandler.AcceptInvitationHandler)
+		publicInvs.POST("/:token/accept", cfg.IdentityHandler.AcceptInvitationHandler)
 
 		publicTenants := router.Group("/api/v1/tenants")
+
 		publicTenants.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
 		publicTenants.POST("/register", cfg.IdentityHandler.RegisterTenantHandler)
 	}
