@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
@@ -77,11 +79,21 @@ func (a *RuntimeAdapter) Evaluate(ctx context.Context, req agentruntime.Reliabil
 		return agentruntime.ReliabilityEvaluation{}, ErrUnconfigured
 	}
 
+	caseDescription := strings.TrimSpace(req.CaseDescription)
+	if caseDescription == "" {
+		caseDescription = strings.TrimSpace(req.ProposedDecision)
+	}
+	if caseDescription == "" {
+		caseDescription = "Agent execution decision"
+	}
+
+	proposedDecision := normalizeProposedDecision(req.ProposedDecision)
+
 	grpcReq := &ardav1.GateRequest{
 		TenantId:             req.TenantID.String(),
 		AgentId:              req.AgentID.String(),
-		ProposedDecision:     req.ProposedDecision,
-		CaseDescription:      req.CaseDescription,
+		ProposedDecision:     proposedDecision,
+		CaseDescription:      caseDescription,
 		ReliabilityThreshold: req.ReliabilityThreshold,
 	}
 
@@ -109,4 +121,51 @@ func (a *RuntimeAdapter) Evaluate(ctx context.Context, req agentruntime.Reliabil
 		IsCalibrated:         resp.IsCalibrated,
 		CalibrationVersion:   calibVer,
 	}, nil
+}
+
+// normalizeProposedDecision extracts a canonical Reliability Service decision ("APPROVE" or "REJECT")
+// from raw LLM output (which may be plain text, JSON, or markdown-fenced JSON).
+func normalizeProposedDecision(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 && strings.HasPrefix(lines[0], "```") {
+			trimmed = strings.Join(lines[1:], "\n")
+		}
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+		trimmed = strings.TrimSpace(trimmed)
+	}
+
+	if strings.HasPrefix(trimmed, "{") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &m); err == nil {
+			for _, key := range []string{"decision", "proposed_decision", "verdict", "outcome", "action"} {
+				if val, ok := m[key].(string); ok {
+					upper := strings.ToUpper(strings.TrimSpace(val))
+					switch upper {
+					case "APPROVE", "APPROVED", "ALLOW":
+						return "APPROVE"
+					case "REJECT", "REJECTED", "DENY", "DENIED", "BLOCK":
+						return "REJECT"
+					}
+				}
+			}
+		}
+	}
+
+	upper := strings.ToUpper(trimmed)
+	if upper == "APPROVE" || upper == "APPROVED" {
+		return "APPROVE"
+	}
+	if upper == "REJECT" || upper == "REJECTED" || upper == "DENY" || upper == "DENIED" {
+		return "REJECT"
+	}
+	hasReject := strings.Contains(upper, "REJECT") || strings.Contains(upper, "DENY")
+	hasApprove := strings.Contains(upper, "APPROVE")
+	if hasReject && !hasApprove {
+		return "REJECT"
+	}
+	return "APPROVE"
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
@@ -48,6 +49,15 @@ func (h *ToolsHandler) RegisterToolHandler(c *gin.Context) {
 	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
 		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
 		return
+	}
+
+	// Restrict MCP server metadata registration to company admins only
+	if strings.HasSuffix(strings.TrimSpace(req.HandlerID), ":__server_meta__") {
+		identity, ok := auth.IdentityFromContext(c.Request.Context())
+		if !ok || identity.Role != auth.RoleCompanyAdmin {
+			h.writeErr(c.Writer, http.StatusForbidden, "FORBIDDEN", "only company admins can register MCP servers")
+			return
+		}
 	}
 
 	// Tenant isolation: override tenant ID from authenticated context

@@ -269,9 +269,12 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		}
 
 		if (res.Status == agentruntime.StatusEscalated || res.IsEscalation()) && s.reviewClient != nil {
-			proposed := "APPROVE"
-			if p, ok := res.Output["proposed_decision"].(string); ok && p != "" {
-				proposed = p
+			proposed := ""
+			if p, ok := res.Output["proposed_decision"].(string); ok {
+				normalized := strings.ToUpper(strings.TrimSpace(p))
+				if normalized == "APPROVE" || normalized == "REJECT" {
+					proposed = normalized
+				}
 			}
 			conf := 0.0
 			if c, ok := res.Output["confidence"].(float64); ok {

@@ -20,8 +20,13 @@ func (r *CreateCaseRequest) Validate() error {
 	if r.AgentVersionID == uuid.Nil {
 		return NewValidationError("agent_version_id is required")
 	}
-	if strings.TrimSpace(r.ProposedDecision) == "" {
-		return NewValidationError("proposed_decision is required")
+	// Agents may only propose APPROVE or REJECT (or leave empty if escalated without a decision).
+	// Escalation is a routing action, never a proposed decision.
+	trimmedProposed := strings.TrimSpace(r.ProposedDecision)
+	if strings.EqualFold(trimmedProposed, "ESCALATE") {
+		r.ProposedDecision = ""
+	} else {
+		r.ProposedDecision = trimmedProposed
 	}
 	if strings.TrimSpace(r.ExecutionMode) == "" {
 		r.ExecutionMode = "realtime"

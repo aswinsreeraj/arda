@@ -195,6 +195,11 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 	if err != nil {
 		return ExecutionResult{}, fmt.Errorf("failed to build prompt: %w", err)
 	}
+	if !strings.Contains(cfg.PromptTemplate, "{{") && len(input.Payload) > 0 {
+		if payloadJSON, err := json.Marshal(input.Payload); err == nil && string(payloadJSON) != "{}" {
+			prompt = fmt.Sprintf("%s\n\nInput Payload:\n%s", prompt, string(payloadJSON))
+		}
+	}
 
 	allowedTools := make(map[string]bool, len(cfg.Tools))
 	for _, t := range cfg.Tools {
@@ -347,18 +352,25 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				}
 				target = escalate.Target
 			}
+			proposedDecision := extractAgentDecision(resp.Content)
+			out := map[string]any{
+				"escalation_reason": reason,
+				"escalation_target": target,
+				"content":           resp.Content,
+			}
+			if proposedDecision != "" {
+				out["proposed_decision"] = proposedDecision
+			}
 			usage := tracker.TokenUsage()
 			result := ExecutionResult{
 				Status:  StatusEscalated,
 				Outcome: OutcomeTypeEscalation,
+				Reason:  reason,
 				Escalation: &EscalationInfo{
 					Reason: reason,
 					Target: target,
 				},
-				Output: map[string]any{
-					"escalation_reason": reason,
-					"escalation_target": target,
-				},
+				Output: out,
 				Metadata: &ExecutionMetadata{
 					Iterations:       tracker.Iterations(),
 					ToolInvocations:  tracker.ToolInvocations(),
@@ -410,6 +422,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					ExecutionID:          executionID,
 					ExecutionMode:        cfg.ExecutionMode,
 					ReliabilityThreshold: cfg.ReliabilityThreshold,
+					CaseDescription:      buildCaseDescription(input.Payload, prompt),
 					ProposedDecision:     resp.Content,
 					ActionType:           "decision",
 					ActionPayload:        parsedJSON,
@@ -434,20 +447,25 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					if e.isCalibrationSample() {
 						usage := tracker.TokenUsage()
 						reason := fmt.Sprintf("Active learning calibration sample (1-in-%d): autonomous decision routed for human review", e.calibrationInterval)
+						calOut := map[string]any{
+							"escalation_reason":    reason,
+							"confidence":           relEval.Confidence,
+							"reason_code":          "CALIBRATION_SAMPLE",
+							"calibration_sampling": true,
+							"content":              resp.Content,
+						}
+						if proposed := extractAgentDecision(resp.Content); proposed != "" {
+							calOut["proposed_decision"] = proposed
+						}
 						return ExecutionResult{
 							Status:  StatusEscalated,
 							Outcome: OutcomeTypeEscalation,
+							Reason:  reason,
 							Escalation: &EscalationInfo{
 								Reason: reason,
 								Target: "calibration_review",
 							},
-							Output: map[string]any{
-								"escalation_reason":    reason,
-								"confidence":           relEval.Confidence,
-								"reason_code":          "CALIBRATION_SAMPLE",
-								"calibration_sampling": true,
-								"content":              resp.Content,
-							},
+							Output: calOut,
 							Metadata: &ExecutionMetadata{
 								Iterations:          tracker.Iterations(),
 								ToolInvocations:     tracker.ToolInvocations(),
@@ -465,18 +483,24 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					if reason == "" {
 						reason = fmt.Sprintf("reliability threshold not met (confidence: %.2f < %.2f)", relEval.Confidence, cfg.ReliabilityThreshold)
 					}
+					escOut := map[string]any{
+						"escalation_reason": reason,
+						"confidence":        relEval.Confidence,
+						"reason_code":       relEval.ReasonCode,
+						"content":           resp.Content,
+					}
+					if proposed := extractAgentDecision(resp.Content); proposed != "" {
+						escOut["proposed_decision"] = proposed
+					}
 					return ExecutionResult{
 						Status:  StatusEscalated,
 						Outcome: OutcomeTypeEscalation,
+						Reason:  reason,
 						Escalation: &EscalationInfo{
 							Reason: reason,
 							Target: "reliability_review",
 						},
-						Output: map[string]any{
-							"escalation_reason": reason,
-							"confidence":        relEval.Confidence,
-							"reason_code":       relEval.ReasonCode,
-						},
+						Output: escOut,
 						Metadata: &ExecutionMetadata{
 							Iterations:          tracker.Iterations(),
 							ToolInvocations:     tracker.ToolInvocations(),
@@ -831,6 +855,9 @@ func parseModelAction(content string) (actionType string, toolCall *toolCallActi
 	}
 
 	if !strings.HasPrefix(trimmed, "{") {
+		if strings.EqualFold(trimmed, "escalate") {
+			return "escalate", nil, &escalationAction{Reason: "Agent requested escalation for human review"}, nil, nil
+		}
 		return "decision", nil, nil, content, nil
 	}
 
@@ -885,6 +912,18 @@ func parseModelAction(content string) (actionType string, toolCall *toolCallActi
 		}
 	}
 
+	if decStr, ok := m["decision"].(string); ok && strings.EqualFold(strings.TrimSpace(decStr), "escalate") {
+		reason, _ := m["reason"].(string)
+		if reason == "" {
+			reason, _ = m["rationale"].(string)
+		}
+		if reason == "" {
+			reason, _ = m["explanation"].(string)
+		}
+		target, _ := m["target"].(string)
+		return "escalate", nil, &escalationAction{Reason: reason, Target: target}, nil, nil
+	}
+
 	if strings.EqualFold(actionStr, "decision") || strings.EqualFold(typeStr, "decision") {
 		if decPayload, ok := m["decision"]; ok {
 			return "decision_wrapped", nil, nil, decPayload, nil
@@ -920,4 +959,65 @@ func sanitizeToolArguments(args map[string]any) map[string]any {
 		clean[k] = v
 	}
 	return clean
+}
+
+func buildCaseDescription(payload map[string]any, fallbackPrompt string) string {
+	if len(payload) > 0 {
+		if raw, ok := payload["case_description"].(string); ok && strings.TrimSpace(raw) != "" {
+			return strings.TrimSpace(raw)
+		}
+		if b, err := json.Marshal(payload); err == nil {
+			serialized := strings.TrimSpace(string(b))
+			if serialized != "" && serialized != "{}" && serialized != "null" {
+				return serialized
+			}
+		}
+	}
+	if trimmed := strings.TrimSpace(fallbackPrompt); trimmed != "" {
+		return trimmed
+	}
+	return "Agent execution case"
+}
+
+// extractAgentDecision extracts a canonical agent decision ("APPROVE" or "REJECT") from LLM output.
+// Returns "" if the agent did not propose a decision (e.g. escalated without deciding).
+func extractAgentDecision(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 && strings.HasPrefix(lines[0], "```") {
+			trimmed = strings.Join(lines[1:], "\n")
+		}
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+		trimmed = strings.TrimSpace(trimmed)
+	}
+
+	if strings.HasPrefix(trimmed, "{") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &m); err == nil {
+			for _, key := range []string{"decision", "proposed_decision", "verdict", "outcome"} {
+				if val, ok := m[key].(string); ok {
+					switch strings.ToUpper(strings.TrimSpace(val)) {
+					case "APPROVE", "APPROVED", "ALLOW":
+						return "APPROVE"
+					case "REJECT", "REJECTED", "DENY", "DENIED", "BLOCK":
+						return "REJECT"
+					case "ESCALATE", "ESCALATED":
+						return ""
+					}
+				}
+			}
+		}
+	}
+
+	switch strings.ToUpper(trimmed) {
+	case "APPROVE", "APPROVED":
+		return "APPROVE"
+	case "REJECT", "REJECTED":
+		return "REJECT"
+	default:
+		return ""
+	}
 }

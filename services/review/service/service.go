@@ -207,13 +207,23 @@ func (s *Service) ResolveCase(ctx context.Context, req domain.ResolveCaseRequest
 
 	// Authoritative final decision logic
 	var finalDecision string
+	existingProposed := strings.TrimSpace(existing.ProposedDecision)
+	if strings.EqualFold(existingProposed, "ESCALATE") {
+		existingProposed = ""
+	}
 	switch req.Decision {
 	case domain.DecisionApprove:
-		finalDecision = existing.ProposedDecision
+		if existingProposed == "" {
+			return nil, domain.NewValidationError("cannot accept agent decision: no decision was proposed by the agent; please override with an authoritative decision")
+		}
+		finalDecision = existingProposed
 	case domain.DecisionReject:
 		finalDecision = "REJECT"
 	case domain.DecisionOverride:
 		finalDecision = strings.TrimSpace(req.FinalDecision)
+		if existingProposed != "" && strings.EqualFold(finalDecision, existingProposed) {
+			return nil, domain.NewValidationError("override decision must differ from the agent's proposed decision")
+		}
 	}
 
 	now := time.Now().UTC()
@@ -236,6 +246,11 @@ func (s *Service) ResolveCase(ctx context.Context, req domain.ResolveCaseRequest
 		desc = fmt.Sprintf("Case %s adjudicated by %s", existing.ID, req.ReviewerID)
 	}
 
+	eventProposed := existingProposed
+	if eventProposed == "" {
+		eventProposed = "NONE"
+	}
+
 	resEvent := events.ReviewResolvedEvent{
 		EventID:                  eventID,
 		EventType:                events.EventTypeReviewResolved,
@@ -246,8 +261,8 @@ func (s *Service) ResolveCase(ctx context.Context, req domain.ResolveCaseRequest
 		ExecutionID:              existing.ExecutionID,
 		CorrelationID:            existing.ExecutionID,
 		OriginalCaseDescription:  desc,
-		ProposedDecision:         existing.ProposedDecision,
-		OriginalProposedDecision: existing.ProposedDecision,
+		ProposedDecision:         eventProposed,
+		OriginalProposedDecision: eventProposed,
 		HumanDecision:            finalDecision,
 		FinalDecision:            finalDecision,
 		DecisionType:             string(req.Decision),
