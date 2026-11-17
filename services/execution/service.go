@@ -228,12 +228,12 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 		if ver.Configuration.ExecutionMode != "" {
 			execMode = ver.Configuration.ExecutionMode
 		} else {
-			execMode = domain.ExecutionModeAutonomous
+			execMode = domain.ExecutionModeDurable
 		}
 	}
 
-	// 1. Synchronous Realtime Execution
-	if req.Mode == "sync" {
+	// 1. Synchronous Realtime Execution (mode="sync" or execution_mode="realtime")
+	if req.Mode == "sync" || execMode == domain.ExecutionModeRealtime {
 		if s.runtime == nil {
 			return nil, NewUpstreamUnavailableError("realtime execution runtime is not configured", nil)
 		}

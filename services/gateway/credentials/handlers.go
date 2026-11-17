@@ -147,3 +147,29 @@ func (h *Handler) VerifyCredentialHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, resp)
 }
+
+// ListCredentialModelsHandler handles GET /api/v1/credentials/:id/models
+func (h *Handler) ListCredentialModelsHandler(c *gin.Context) {
+	tenantID, ok := h.getTenantID(c)
+	if !ok {
+		return
+	}
+
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || id == uuid.Nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid credential id: must be a valid uuid")
+		return
+	}
+
+	resp, err := h.svc.ListModels(c.Request.Context(), tenantID, id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "credential not found")
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadGateway, "UPSTREAM_ERROR", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}

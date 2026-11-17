@@ -22,13 +22,13 @@ var (
 	ErrAccountDisabled        = errors.New("user account is disabled")
 	ErrNoActiveMembership     = errors.New("user has no active tenant memberships")
 	ErrUnauthorizedTenant     = errors.New("unauthorized or inactive membership for requested tenant")
+	ErrTenantSuspended        = errors.New("organization has been suspended by platform administration")
 	ErrInvalidEmail           = errors.New("invalid email address format")
 	ErrWeakPassword           = errors.New("password must be between 8 and 128 characters")
 	ErrPermissionDenied       = errors.New("permission denied")
 	ErrCannotAssignSuperAdmin = errors.New("cannot assign super_admin as a tenant membership role")
 	ErrInvalidRole            = errors.New("invalid membership role")
 )
-
 
 // EmailSender defines the interface for delivering verification and notification emails.
 type EmailSender interface {
@@ -93,7 +93,6 @@ func generateToken() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
-
 
 // Register creates a new user account with a secure password hash.
 func (s *Service) Register(ctx context.Context, req RegisterRequest) (*SafeUser, error) {
@@ -313,7 +312,6 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 		return nil, ErrEmailNotVerified
 	}
 
-
 	var activeTenantID uuid.UUID
 	var resolvedRole auth.Role
 
@@ -339,7 +337,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 			if len(memberships) > 0 {
 				activeTenantID = memberships[0].TenantID
 			} else {
-				return nil, errors.New("super_admin must supply a tenant_id or have at least one tenant membership to scope API operations")
+				activeTenantID = PlatformSystemTenantID
 			}
 		}
 	} else {
@@ -376,6 +374,15 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResponse, 
 			// Default to first active membership
 			activeTenantID = activeMemberships[0].TenantID
 			resolvedRole = activeMemberships[0].Role
+		}
+
+		// Verify tenant status is active
+		activeTenant, err := s.store.GetTenantByID(ctx, activeTenantID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve active tenant: %w", err)
+		}
+		if activeTenant.Status != "active" {
+			return nil, ErrTenantSuspended
 		}
 	}
 
@@ -419,9 +426,19 @@ func (s *Service) GetCurrentUser(ctx context.Context, caller auth.Identity) (*Cu
 
 	var activeTenant *Tenant
 	if caller.TenantID != uuid.Nil {
-		t, err := s.store.GetTenantByID(ctx, caller.TenantID)
-		if err == nil {
-			activeTenant = t
+		if caller.TenantID == PlatformSystemTenantID {
+			activeTenant = &Tenant{
+				ID:        PlatformSystemTenantID,
+				Name:      "ARDA Platform",
+				Status:    "active",
+				CreatedAt: user.CreatedAt,
+				UpdatedAt: user.UpdatedAt,
+			}
+		} else {
+			t, err := s.store.GetTenantByID(ctx, caller.TenantID)
+			if err == nil {
+				activeTenant = t
+			}
 		}
 	}
 
@@ -598,7 +615,7 @@ func (s *Service) UpdateTenantMember(ctx context.Context, caller auth.Identity, 
 	return membership, nil
 }
 
-// DeleteTenantMember removes a user's membership from a tenant.
+// DeleteTenantMember removes a user's membership from a tenant or revokes a pending invitation.
 func (s *Service) DeleteTenantMember(ctx context.Context, caller auth.Identity, tenantID, targetUserID uuid.UUID) error {
 	if err := s.checkTenantAdminAuth(caller, tenantID); err != nil {
 		return err
@@ -606,6 +623,12 @@ func (s *Service) DeleteTenantMember(ctx context.Context, caller auth.Identity, 
 
 	membership, err := s.store.GetMembership(ctx, targetUserID, tenantID)
 	if err != nil {
+		if errors.Is(err, ErrMembershipNotFound) {
+			// If not a membership, check if targetUserID is a pending invitation ID
+			if invErr := s.store.DeleteInvitation(ctx, tenantID, targetUserID); invErr == nil {
+				return nil
+			}
+		}
 		return err
 	}
 
@@ -621,6 +644,23 @@ func (s *Service) DeleteTenantMember(ctx context.Context, caller auth.Identity, 
 	}
 
 	return s.store.DeleteMembership(ctx, targetUserID, tenantID)
+}
+
+// RevokeInvitation revokes a pending invitation by ID or email.
+func (s *Service) RevokeInvitation(ctx context.Context, caller auth.Identity, tenantID uuid.UUID, inviteID uuid.UUID, email string) error {
+	if err := s.checkTenantAdminAuth(caller, tenantID); err != nil {
+		return err
+	}
+
+	if inviteID != uuid.Nil {
+		if err := s.store.DeleteInvitation(ctx, tenantID, inviteID); err == nil {
+			return nil
+		}
+	}
+	if email != "" {
+		return s.store.DeleteInvitationByEmail(ctx, tenantID, email)
+	}
+	return ErrInvitationNotFound
 }
 
 func (s *Service) checkTenantAdminAuth(caller auth.Identity, tenantID uuid.UUID) error {
@@ -845,4 +885,55 @@ func (s *Service) AcceptInvitation(ctx context.Context, req AcceptInviteRequest)
 	}, nil
 }
 
+// ListTenants returns all platform tenants along with agent and member metrics.
+func (s *Service) ListTenants(ctx context.Context) ([]TenantWithStats, error) {
+	return s.store.ListTenants(ctx)
+}
 
+// UpdateTenantStatus sets a tenant's lifecycle status to "active" or "suspended".
+func (s *Service) UpdateTenantStatus(ctx context.Context, tenantID uuid.UUID, status string) (*Tenant, error) {
+	norm := strings.ToLower(strings.TrimSpace(status))
+	if norm != "active" && norm != "suspended" {
+		return nil, fmt.Errorf("invalid tenant status: must be 'active' or 'suspended'")
+	}
+	return s.store.UpdateTenantStatus(ctx, tenantID, norm)
+}
+
+// ListSuperAdmins retrieves all active platform super administrator accounts.
+func (s *Service) ListSuperAdmins(ctx context.Context) ([]SafeUser, error) {
+	return s.store.ListSuperAdmins(ctx)
+}
+
+// CreateSuperAdmin creates or promotes a platform super administrator account.
+func (s *Service) CreateSuperAdmin(ctx context.Context, req CreateSuperAdminRequest) (*SafeUser, error) {
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if err := validateEmail(email); err != nil {
+		return nil, err
+	}
+	if len(req.Password) < 8 || len(req.Password) > 128 {
+		return nil, ErrWeakPassword
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+	displayName := strings.TrimSpace(req.DisplayName)
+	if displayName == "" {
+		displayName = strings.Split(email, "@")[0]
+	}
+	return s.store.CreateOrPromoteSuperAdmin(ctx, email, string(hash), displayName)
+}
+
+// IsTenantActive verifies whether a tenant is in active status.
+func (s *Service) IsTenantActive(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	tenant, err := s.store.GetTenantByID(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return tenant.Status == "active", nil
+}
+
+// GetPlatformStats retrieves aggregated platform-wide operational statistics.
+func (s *Service) GetPlatformStats(ctx context.Context) (map[string]int64, error) {
+	return s.store.GetPlatformStats(ctx)
+}

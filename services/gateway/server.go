@@ -252,7 +252,6 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	identSvc.SetRequireVerification(true)
 	identHandler := identity.NewHandler(identSvc, gatewayhttp.WriteErrorResponse)
 
-
 	var grpcClient ardav1.AgentRegistryServiceClient
 	if regClient != nil {
 		grpcClient = regClient.Client()
@@ -341,12 +340,20 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 					ConfigProvider:  configProvider,
 				})
 
-				executor, err := agentruntime.NewLLMExecutor(
-					resolvingClient,
-					configProvider,
+				execOpts := []agentruntime.LLMExecutorOption{
 					agentruntime.WithDefaultModel("gpt-4o"),
 					agentruntime.WithDefaultExecutorProvider("openai"),
 					agentruntime.WithToolGateway(toolGw),
+					agentruntime.WithCalibrationInterval(10),
+				}
+				if relSvc != nil {
+					execOpts = append(execOpts, agentruntime.WithReliabilityService(proxy.NewRuntimeAdapter(relSvc)))
+				}
+
+				executor, err := agentruntime.NewLLMExecutor(
+					resolvingClient,
+					configProvider,
+					execOpts...,
 				)
 				if err == nil {
 					if rt, err := agentruntime.New(executor); err == nil {
@@ -366,6 +373,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		TemporalClient:     tempClient,
 		CredentialHandler:  credHandler,
 		IdentityHandler:    identHandler,
+		IdentityService:    identSvc,
 		ToolsHandler:       toolsHandler,
 		AgentRuntime:       agentRuntimeInstance,
 		ReviewClient:       grpcReviewClient,

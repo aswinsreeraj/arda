@@ -58,9 +58,7 @@ func (c ConnectionDefinition) Validate() error {
 	if c.ID == "" {
 		return errors.New("connection ID is required")
 	}
-	if c.TenantID == uuid.Nil {
-		return errors.New("tenant ID is required")
-	}
+	// TenantID is allowed to be uuid.Nil for shared system-level fallback connections.
 	if c.ServerName == "" {
 		return errors.New("server name is required")
 	}

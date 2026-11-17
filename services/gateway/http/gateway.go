@@ -46,6 +46,7 @@ type GatewayConfig struct {
 	TemporalClient     WorkflowDispatcher
 	CredentialHandler  *credentials.Handler
 	IdentityHandler    *identity.Handler
+	IdentityService    *identity.Service
 	ToolsHandler       *ToolsHandler
 	AgentRuntime       agentruntime.AgentRuntime
 	ReviewClient       ardav1.ReviewServiceClient
@@ -127,11 +128,13 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		publicTenants.POST("/register", cfg.IdentityHandler.RegisterTenantHandler)
 	}
 
-
 	// Protected API route group
 	api := router.Group("/api")
 	api.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
 	api.Use(auth.AuthenticateMiddleware(cfg.JWTValidator, WriteErrorResponse))
+	if cfg.IdentityService != nil {
+		api.Use(auth.RequireActiveTenantMiddleware(cfg.IdentityService, WriteErrorResponse))
+	}
 
 	// Reliability Service
 	api.POST("/v1/reliability/gate",
@@ -239,6 +242,10 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			auth.RequireActionMiddleware(auth.ActionCredentialManage, WriteErrorResponse),
 			cfg.CredentialHandler.VerifyCredentialHandler,
 		)
+		api.GET("/v1/credentials/:id/models",
+			auth.RequireActionMiddleware(auth.ActionCredentialRead, WriteErrorResponse),
+			cfg.CredentialHandler.ListCredentialModelsHandler,
+		)
 	}
 
 	// Agent Execution (routed through Execution Service)
@@ -307,6 +314,28 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 	if cfg.IdentityHandler != nil {
 		api.GET("/v1/auth/me", cfg.IdentityHandler.GetCurrentUserHandler)
 
+		// Platform super-admin endpoints
+		api.GET("/v1/tenants",
+			auth.RequireActionMiddleware(auth.ActionTenantRead, WriteErrorResponse),
+			cfg.IdentityHandler.ListTenantsHandler,
+		)
+		api.PATCH("/v1/tenants/:tenantId/status",
+			auth.RequireActionMiddleware(auth.ActionTenantManage, WriteErrorResponse),
+			cfg.IdentityHandler.UpdateTenantStatusHandler,
+		)
+		api.GET("/v1/platform/super-admins",
+			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
+			cfg.IdentityHandler.ListSuperAdminsHandler,
+		)
+		api.POST("/v1/platform/super-admins",
+			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
+			cfg.IdentityHandler.CreateSuperAdminHandler,
+		)
+		api.GET("/v1/platform/health",
+			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
+			cfg.IdentityHandler.GetPlatformHealthHandler,
+		)
+
 		api.POST("/v1/tenants",
 			auth.RequireActionMiddleware(auth.ActionTenantCreate, WriteErrorResponse),
 			cfg.IdentityHandler.CreateTenantHandler,
@@ -330,6 +359,14 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		api.DELETE("/v1/tenants/:tenantId/members/:userId",
 			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
 			cfg.IdentityHandler.DeleteTenantMemberHandler,
+		)
+		api.DELETE("/v1/tenants/:tenantId/invites/:inviteId",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.RevokeInvitationHandler,
+		)
+		api.DELETE("/v1/tenants/:tenantId/invites",
+			auth.RequireActionMiddleware(auth.ActionTenantMemberManage, WriteErrorResponse),
+			cfg.IdentityHandler.RevokeInvitationHandler,
 		)
 
 		// Users resource endpoints
@@ -503,6 +540,11 @@ func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regCli
 	}
 	if len(body.Input) == 0 && len(body.InputPayload) > 0 {
 		body.Input = body.InputPayload
+	}
+	if len(body.Input) == 1 {
+		if nested, ok := body.Input["input"].(map[string]any); ok {
+			body.Input = nested
+		}
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(body.Mode))

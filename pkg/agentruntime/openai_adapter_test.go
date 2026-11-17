@@ -665,4 +665,3 @@ func TestGrokAdapter_Success(t *testing.T) {
 		t.Fatalf("unexpected content: %q", resp.Content)
 	}
 }
-

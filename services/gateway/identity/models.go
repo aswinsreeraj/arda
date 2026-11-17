@@ -23,6 +23,9 @@ const (
 	MembershipStatusDisabled MembershipStatus = "disabled"
 )
 
+// PlatformSystemTenantID is the global platform-scoped UUID assigned to super admins when operating without a tenant context.
+var PlatformSystemTenantID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
 // User represents a persistent human user account.
 type User struct {
 	ID              uuid.UUID  `json:"id"`
@@ -192,7 +195,6 @@ type InviteMemberResponse struct {
 	Message    string    `json:"message"`
 }
 
-
 // UpdateMemberRequest represents updates to a member's role or status.
 type UpdateMemberRequest struct {
 	Role   auth.Role        `json:"role,omitempty"`
@@ -230,3 +232,27 @@ type AcceptInviteResponse struct {
 	Role           auth.Role `json:"role"`
 }
 
+// TenantWithStats represents a tenant enriched with agent and member counts for platform administration.
+type TenantWithStats struct {
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Tier        string    `json:"tier"`
+	Status      string    `json:"status"`
+	AgentCount  int64     `json:"agent_count"`
+	MemberCount int64     `json:"member_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// UpdateTenantStatusRequest represents the payload to update a tenant's lifecycle status.
+type UpdateTenantStatusRequest struct {
+	Status string `json:"status"`
+}
+
+// CreateSuperAdminRequest represents the payload to create or promote a platform super administrator.
+type CreateSuperAdminRequest struct {
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
+}

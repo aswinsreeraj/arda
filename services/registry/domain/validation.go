@@ -36,7 +36,7 @@ func ValidateConfiguration(cfg Configuration) error {
 	// Validate execution_mode
 	normalizedMode := ExecutionMode(strings.ToLower(strings.TrimSpace(string(cfg.ExecutionMode))))
 	if _, ok := SupportedExecutionModes[normalizedMode]; !ok {
-		details = append(details, fmt.Sprintf("execution_mode '%s' is invalid; supported modes are: autonomous, supervised, human_in_the_loop, gated", cfg.ExecutionMode))
+		details = append(details, fmt.Sprintf("execution_mode '%s' is invalid; supported modes are: durable, realtime (legacy: autonomous, supervised, human_in_the_loop, gated)", cfg.ExecutionMode))
 	}
 
 	// Validate tools

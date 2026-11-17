@@ -106,12 +106,12 @@ func TestReviewGRPCServer_E2E(t *testing.T) {
 
 	// 4. ResolveReviewCase
 	resolveResp, err := client.ResolveReviewCase(authCtx, &ardav1.ResolveReviewCaseRequest{
-		TenantId:   tenantID.String(),
-		CaseId:     caseID,
-		Decision:   "override",
+		TenantId:      tenantID.String(),
+		CaseId:        caseID,
+		Decision:      "override",
 		FinalDecision: "HOLD",
-		Reason:     "Adjudication confirmed HOLD.",
-		ReviewerId: "user_1",
+		Reason:        "Adjudication confirmed HOLD.",
+		ReviewerId:    "user_1",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, caseID, resolveResp.GetCaseId())

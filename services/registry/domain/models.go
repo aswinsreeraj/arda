@@ -10,9 +10,16 @@ import (
 )
 
 // ExecutionMode defines the operating mode for governed agent execution.
+// ARDA supports two canonical execution modes:
+// - "durable": Orchestrated asynchronously via Temporal with checkpointing and state persistence.
+// - "realtime": Direct synchronous in-process execution with immediate low-latency responses.
+// Both modes strictly require and enforce the Reliability Service confidence gate.
 type ExecutionMode string
 
 const (
+	ExecutionModeDurable  ExecutionMode = "durable"
+	ExecutionModeRealtime ExecutionMode = "realtime"
+	// Legacy modes preserved for backwards compatibility with existing records
 	ExecutionModeAutonomous     ExecutionMode = "autonomous"
 	ExecutionModeSupervised     ExecutionMode = "supervised"
 	ExecutionModeHumanInTheLoop ExecutionMode = "human_in_the_loop"
@@ -21,6 +28,8 @@ const (
 
 // SupportedExecutionModes lists the allowed execution modes for validation.
 var SupportedExecutionModes = map[ExecutionMode]struct{}{
+	ExecutionModeDurable:        {},
+	ExecutionModeRealtime:       {},
 	ExecutionModeAutonomous:     {},
 	ExecutionModeSupervised:     {},
 	ExecutionModeHumanInTheLoop: {},

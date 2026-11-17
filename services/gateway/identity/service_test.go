@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/google/uuid"
@@ -425,7 +424,6 @@ func TestEmailVerificationAndOTP(t *testing.T) {
 	// Extract token from invite link
 	token := mailer.lastLink[strings.Index(mailer.lastLink, "token=")+6:]
 
-
 	// 9. Accept the invitation
 	acceptResp, err := svc.AcceptInvitation(ctx, identity.AcceptInviteRequest{
 		Token:    token,
@@ -472,5 +470,3 @@ func TestEmailVerificationAndOTP(t *testing.T) {
 		t.Fatalf("expected non-empty access token for invited user login")
 	}
 }
-
-

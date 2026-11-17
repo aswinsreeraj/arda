@@ -12,12 +12,13 @@ import (
 
 // GuardrailContext provides contextual execution metadata and arguments to guardrail evaluators.
 type GuardrailContext struct {
-	TenantID       uuid.UUID
-	AgentID        uuid.UUID
-	AgentVersionID uuid.UUID
-	ExecutionID    string
-	Tool           ToolDefinition
-	Arguments      map[string]any
+	TenantID          uuid.UUID
+	AgentID           uuid.UUID
+	AgentVersionID    uuid.UUID
+	ExecutionID       string
+	Tool              ToolDefinition
+	Arguments         map[string]any
+	MaxAmountOverride float64
 }
 
 // GuardrailDenialError represents an explicit, deterministic business rule or policy violation.
@@ -123,7 +124,11 @@ func NewParameterBoundsGuardrail(maxAmount float64) *ParameterBoundsGuardrail {
 }
 
 func (g *ParameterBoundsGuardrail) Evaluate(ctx context.Context, evalCtx GuardrailContext) error {
-	if g.MaxAmount <= 0 {
+	maxThreshold := g.MaxAmount
+	if evalCtx.MaxAmountOverride > 0 {
+		maxThreshold = evalCtx.MaxAmountOverride
+	}
+	if maxThreshold <= 0 {
 		return nil
 	}
 
@@ -158,10 +163,10 @@ func (g *ParameterBoundsGuardrail) Evaluate(ctx context.Context, evalCtx Guardra
 				continue
 			}
 
-			if num > g.MaxAmount {
+			if num > maxThreshold {
 				return &GuardrailDenialError{
 					Rule:       "parameter_bounds",
-					Reason:     fmt.Sprintf("parameter %q value %.2f exceeds maximum allowed threshold of %.2f", k, num, g.MaxAmount),
+					Reason:     fmt.Sprintf("parameter %q value %.2f exceeds maximum allowed threshold of %.2f", k, num, maxThreshold),
 					DenialCode: DenialCodeGuardrailDenied,
 				}
 			}

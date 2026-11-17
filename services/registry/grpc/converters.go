@@ -17,29 +17,25 @@ import (
 func ProtoToExecutionMode(m ardav1.ExecutionMode) domain.ExecutionMode {
 	switch m {
 	case ardav1.ExecutionMode_EXECUTION_MODE_AUTONOMOUS:
-		return domain.ExecutionModeAutonomous
-	case ardav1.ExecutionMode_EXECUTION_MODE_SUPERVISED:
-		return domain.ExecutionModeSupervised
+		return domain.ExecutionModeRealtime
+	case ardav1.ExecutionMode_EXECUTION_MODE_SUPERVISED, ardav1.ExecutionMode_EXECUTION_MODE_GATED:
+		return domain.ExecutionModeDurable
 	case ardav1.ExecutionMode_EXECUTION_MODE_HUMAN_IN_THE_LOOP:
 		return domain.ExecutionModeHumanInTheLoop
-	case ardav1.ExecutionMode_EXECUTION_MODE_GATED:
-		return domain.ExecutionModeGated
 	default:
-		return domain.ExecutionModeSupervised
+		return domain.ExecutionModeDurable
 	}
 }
 
 // ExecutionModeToProto converts domain.ExecutionMode to ardav1.ExecutionMode.
 func ExecutionModeToProto(m domain.ExecutionMode) ardav1.ExecutionMode {
 	switch m {
-	case domain.ExecutionModeAutonomous:
-		return ardav1.ExecutionMode_EXECUTION_MODE_AUTONOMOUS
-	case domain.ExecutionModeSupervised:
+	case domain.ExecutionModeDurable, domain.ExecutionModeSupervised, domain.ExecutionModeGated:
 		return ardav1.ExecutionMode_EXECUTION_MODE_SUPERVISED
+	case domain.ExecutionModeRealtime, domain.ExecutionModeAutonomous:
+		return ardav1.ExecutionMode_EXECUTION_MODE_AUTONOMOUS
 	case domain.ExecutionModeHumanInTheLoop:
 		return ardav1.ExecutionMode_EXECUTION_MODE_HUMAN_IN_THE_LOOP
-	case domain.ExecutionModeGated:
-		return ardav1.ExecutionMode_EXECUTION_MODE_GATED
 	default:
 		return ardav1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED
 	}

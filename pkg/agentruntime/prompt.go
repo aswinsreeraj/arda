@@ -165,13 +165,22 @@ func resolvePayloadPath(payload map[string]any, segments []string) (any, error) 
 	}
 
 	var current any = payload
-	for _, seg := range segments {
+	for i, seg := range segments {
 		currMap, ok := current.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("cannot traverse key %q on non-map object", seg)
 		}
 		val, exists := currMap[seg]
 		if !exists {
+			// Fallback: If looking for a top-level key and payload has a nested "input" map, look inside it
+			if i == 0 {
+				if nestedInput, ok := currMap["input"].(map[string]any); ok {
+					if nVal, nExists := nestedInput[seg]; nExists {
+						current = nVal
+						continue
+					}
+				}
+			}
 			return nil, fmt.Errorf("key %q not found", seg)
 		}
 		current = val

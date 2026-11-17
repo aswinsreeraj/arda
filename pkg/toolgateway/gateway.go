@@ -299,13 +299,59 @@ func (g *Gateway) ExecuteTool(ctx context.Context, req agentruntime.ToolExecutio
 
 	// Business guardrails
 	if g.guardrail != nil {
+		var maxAmountOverride float64
+		if agentCfg != nil && agentCfg.Guardrails != nil {
+			if rawMax, ok := agentCfg.Guardrails["max_amount"]; ok {
+				switch m := rawMax.(type) {
+				case float64:
+					maxAmountOverride = m
+				case float32:
+					maxAmountOverride = float64(m)
+				case int:
+					maxAmountOverride = float64(m)
+				case int64:
+					maxAmountOverride = float64(m)
+				case json.Number:
+					if parsed, err := m.Float64(); err == nil {
+						maxAmountOverride = parsed
+					}
+				}
+			}
+			if maxAmountOverride <= 0 {
+				if rulesRaw, ok := agentCfg.Guardrails["rules"].([]any); ok {
+					for _, r := range rulesRaw {
+						if rMap, ok := r.(map[string]any); ok {
+							if rType, _ := rMap["type"].(string); rType == "parameter_bounds" {
+								if tv, ok := rMap["thresholdValue"]; ok {
+									switch v := tv.(type) {
+									case float64:
+										maxAmountOverride = v
+									case float32:
+										maxAmountOverride = float64(v)
+									case int:
+										maxAmountOverride = float64(v)
+									case int64:
+										maxAmountOverride = float64(v)
+									case json.Number:
+										if parsed, err := v.Float64(); err == nil {
+											maxAmountOverride = parsed
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 		guardCtx := GuardrailContext{
-			TenantID:       req.TenantID,
-			AgentID:        req.AgentID,
-			AgentVersionID: req.AgentVersionID,
-			ExecutionID:    req.ExecutionID,
-			Tool:           *tool,
-			Arguments:      req.Arguments,
+			TenantID:          req.TenantID,
+			AgentID:           req.AgentID,
+			AgentVersionID:    req.AgentVersionID,
+			ExecutionID:       req.ExecutionID,
+			Tool:              *tool,
+			Arguments:         req.Arguments,
+			MaxAmountOverride: maxAmountOverride,
 		}
 		if err := g.guardrail.Evaluate(ctx, guardCtx); err != nil {
 			denialCode := DenialCodeGuardrailDenied

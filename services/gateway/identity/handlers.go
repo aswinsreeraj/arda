@@ -142,6 +142,10 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 			h.writeErr(c.Writer, http.StatusForbidden, "UNAUTHORIZED_TENANT", "unauthorized or inactive membership for requested tenant")
 			return
 		}
+		if errors.Is(err, ErrTenantSuspended) {
+			h.writeErr(c.Writer, http.StatusForbidden, "TENANT_SUSPENDED", "organization has been suspended by platform administration")
+			return
+		}
 		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
 		return
 	}
@@ -329,8 +333,24 @@ func (h *Handler) DeleteTenantMemberHandler(c *gin.Context) {
 	}
 
 	userIDStr := c.Param("userId")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil || userID == uuid.Nil {
+	emailQuery := c.Query("email")
+	userID, parseErr := uuid.Parse(userIDStr)
+
+	// If userId is missing, nil, or invalid UUID, but email is provided, revoke by email
+	if (parseErr != nil || userID == uuid.Nil) && emailQuery != "" {
+		if err := h.svc.RevokeInvitation(c.Request.Context(), identity, tenantID, uuid.Nil, emailQuery); err != nil {
+			if errors.Is(err, ErrPermissionDenied) {
+				h.writeErr(c.Writer, http.StatusForbidden, "PERMISSION_DENIED", "only tenant administrators can manage members")
+				return
+			}
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "invitation not found")
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	if parseErr != nil || userID == uuid.Nil {
 		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid userId parameter")
 		return
 	}
@@ -340,8 +360,15 @@ func (h *Handler) DeleteTenantMemberHandler(c *gin.Context) {
 			h.writeErr(c.Writer, http.StatusForbidden, "PERMISSION_DENIED", "only tenant administrators can manage members")
 			return
 		}
-		if errors.Is(err, ErrMembershipNotFound) {
-			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "membership not found")
+		if errors.Is(err, ErrMembershipNotFound) || errors.Is(err, ErrInvitationNotFound) {
+			// If emailQuery is passed as fallback
+			if emailQuery != "" {
+				if rErr := h.svc.RevokeInvitation(c.Request.Context(), identity, tenantID, uuid.Nil, emailQuery); rErr == nil {
+					c.Status(http.StatusNoContent)
+					return
+				}
+			}
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "membership or invitation not found")
 			return
 		}
 		if errors.Is(err, ErrCannotRemoveLastAdmin) {
@@ -349,6 +376,45 @@ func (h *Handler) DeleteTenantMemberHandler(c *gin.Context) {
 			return
 		}
 		h.writeErr(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete tenant member")
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// RevokeInvitationHandler handles DELETE /api/v1/tenants/:tenantId/invites/:inviteId and DELETE /api/v1/tenants/:tenantId/invites
+func (h *Handler) RevokeInvitationHandler(c *gin.Context) {
+	identity, ok := h.getIdentity(c)
+	if !ok {
+		return
+	}
+
+	tenantIDStr := c.Param("tenantId")
+	tenantID, err := uuid.Parse(tenantIDStr)
+	if err != nil || tenantID == uuid.Nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid tenantId parameter")
+		return
+	}
+
+	inviteIDStr := c.Param("inviteId")
+	inviteID, _ := uuid.Parse(inviteIDStr)
+	email := c.Query("email")
+
+	if inviteID == uuid.Nil && email == "" {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "inviteId or email query parameter is required")
+		return
+	}
+
+	if err := h.svc.RevokeInvitation(c.Request.Context(), identity, tenantID, inviteID, email); err != nil {
+		if errors.Is(err, ErrPermissionDenied) {
+			h.writeErr(c.Writer, http.StatusForbidden, "PERMISSION_DENIED", "only tenant administrators can manage invitations")
+			return
+		}
+		if errors.Is(err, ErrInvitationNotFound) {
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "invitation not found")
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
 		return
 	}
 
@@ -621,4 +687,87 @@ func (h *Handler) AcceptInvitationHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// ListTenantsHandler handles GET /api/v1/tenants
+func (h *Handler) ListTenantsHandler(c *gin.Context) {
+	tenants, err := h.svc.ListTenants(c.Request.Context())
+	if err != nil {
+		h.writeErr(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to list tenants")
+		return
+	}
+	c.JSON(http.StatusOK, tenants)
+}
 
+// UpdateTenantStatusHandler handles PATCH /api/v1/tenants/:tenantId/status
+func (h *Handler) UpdateTenantStatusHandler(c *gin.Context) {
+	tenantID, err := uuid.Parse(c.Param("tenantId"))
+	if err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "INVALID_UUID", "invalid tenant id parameter")
+		return
+	}
+
+	var req UpdateTenantStatusRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+		return
+	}
+
+	tenant, err := h.svc.UpdateTenantStatus(c.Request.Context(), tenantID, req.Status)
+	if err != nil {
+		if errors.Is(err, ErrTenantNotFound) {
+			h.writeErr(c.Writer, http.StatusNotFound, "NOT_FOUND", "tenant not found")
+			return
+		}
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, tenant)
+}
+
+// ListSuperAdminsHandler handles GET /api/v1/platform/super-admins
+func (h *Handler) ListSuperAdminsHandler(c *gin.Context) {
+	admins, err := h.svc.ListSuperAdmins(c.Request.Context())
+	if err != nil {
+		h.writeErr(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to list super admins")
+		return
+	}
+	c.JSON(http.StatusOK, admins)
+}
+
+// CreateSuperAdminHandler handles POST /api/v1/platform/super-admins
+func (h *Handler) CreateSuperAdminHandler(c *gin.Context) {
+	var req CreateSuperAdminRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid json request body")
+		return
+	}
+
+	admin, err := h.svc.CreateSuperAdmin(c.Request.Context(), req)
+	if err != nil {
+		h.writeErr(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusCreated, admin)
+}
+
+// GetPlatformHealthHandler handles GET /api/v1/platform/health
+func (h *Handler) GetPlatformHealthHandler(c *gin.Context) {
+	stats, err := h.svc.GetPlatformStats(c.Request.Context())
+	if err != nil {
+		h.writeErr(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retrieve platform statistics")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stats": stats,
+		"services": []gin.H{
+			{"name": "Durable runtime (Temporal)", "status": "operational"},
+			{"name": "Tool gateway (API Gateway v1)", "status": "operational"},
+			{"name": "Calibration service (Reliability)", "status": "operational"},
+			{"name": "Review queue (Human-in-the-Loop)", "status": "operational"},
+			{"name": "Primary Database (PostgreSQL)", "status": "operational"},
+			{"name": "Distributed Broker (Redpanda)", "status": "operational"},
+		},
+	})
+}

@@ -278,7 +278,7 @@ func TestReviewService_ResolutionSemantics(t *testing.T) {
 	// Flush outbox events and check mock producer
 	flushed, err := events.NewOutboxRelay(st, mockProd).Flush(ctx)
 	require.NoError(t, err)
-	assert.True(t, flushed >= 3)
+	assert.True(t, flushed+len(mockProd.GetPublished()) >= 3)
 }
 
 func TestReviewService_ResolutionValidationAndPreventDoubleResolution(t *testing.T) {

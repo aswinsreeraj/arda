@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -179,12 +181,19 @@ func (m *ConnectionManager) CloseConnection(ctx context.Context, tenantID uuid.U
 }
 
 // getOrCreateClient resolves or initializes an MCP client for the connection.
-func (m *ConnectionManager) getOrCreateClient(ctx context.Context, conn ConnectionDefinition) (*client.Client, error) {
-	key := fmt.Sprintf("%s:%s", conn.TenantID, conn.ID)
+func (m *ConnectionManager) getOrCreateClient(ctx context.Context, conn ConnectionDefinition, callerTenantID uuid.UUID) (*client.Client, error) {
+	effectiveTenantID := conn.TenantID
+	if effectiveTenantID == uuid.Nil {
+		effectiveTenantID = callerTenantID
+	}
+	key := fmt.Sprintf("%s:%s", effectiveTenantID, conn.ID)
 
 	m.mu.RLock()
 	cachedClient, ok := m.clientCache[key]
 	inProcServer := m.inProcessServers[key]
+	if inProcServer == nil && conn.TenantID == uuid.Nil {
+		inProcServer = m.inProcessServers[fmt.Sprintf("%s:%s", uuid.Nil, conn.ID)]
+	}
 	m.mu.RUnlock()
 
 	if ok && cachedClient != nil {
@@ -208,24 +217,39 @@ func (m *ConnectionManager) getOrCreateClient(ctx context.Context, conn Connecti
 		// Resolve credentials if configured
 		var token string
 		if conn.CredentialRef != "" && m.credResolver != nil {
-			tok, credErr := m.credResolver.Resolve(ctx, conn.TenantID, conn.CredentialRef)
+			tok, credErr := m.credResolver.Resolve(ctx, effectiveTenantID, conn.CredentialRef)
 			if credErr != nil {
 				return nil, credErr
 			}
 			token = tok
 		}
 
-		var opts []transport.ClientOption
-		if token != "" {
-			opts = append(opts, client.WithHeaders(map[string]string{
-				"Authorization": "Bearer " + token,
-			}))
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		httpClient := &http.Client{
+			Transport: tr,
+			Timeout:   conn.Timeout,
 		}
 
 		if conn.Transport == TransportSSE {
+			var opts []transport.ClientOption
+			opts = append(opts, transport.WithHTTPClient(httpClient))
+			if token != "" {
+				opts = append(opts, transport.WithHeaders(map[string]string{
+					"Authorization": "Bearer " + token,
+				}))
+			}
 			cli, err = client.NewSSEMCPClient(conn.Endpoint, opts...)
 		} else {
-			cli, err = client.NewStreamableHttpClient(conn.Endpoint)
+			var opts []transport.StreamableHTTPCOption
+			opts = append(opts, transport.WithHTTPBasicClient(httpClient))
+			if token != "" {
+				opts = append(opts, transport.WithHTTPHeaders(map[string]string{
+					"Authorization": "Bearer " + token,
+				}))
+			}
+			cli, err = client.NewStreamableHttpClient(conn.Endpoint, opts...)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize network mcp client: %w", err)
@@ -270,7 +294,7 @@ func (m *ConnectionManager) DiscoverTools(ctx context.Context, tenantID uuid.UUI
 		return nil, err
 	}
 
-	cli, err := m.getOrCreateClient(ctx, *conn)
+	cli, err := m.getOrCreateClient(ctx, *conn, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +350,7 @@ func (m *ConnectionManager) CallTool(ctx context.Context, opts CallToolOptions) 
 		return nil, err
 	}
 
-	cli, err := m.getOrCreateClient(ctx, *conn)
+	cli, err := m.getOrCreateClient(ctx, *conn, opts.TenantID)
 	if err != nil {
 		return nil, err
 	}

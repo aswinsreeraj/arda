@@ -86,7 +86,6 @@ func (c *Client) AppURL() string {
 	return c.config.AppURL
 }
 
-
 // SendRaw dispatches an email message using Mailtrap SMTP.
 // If Mailtrap credentials are not configured, it logs the outgoing email for local inspection without failing.
 func (c *Client) SendRaw(to, subject, htmlBody string) error {

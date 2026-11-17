@@ -102,13 +102,13 @@ func TestBoundedLoop_MultiStepToolExecution(t *testing.T) {
 		GenerateFunc: func(ctx context.Context, request LLMRequest) (LLMResponse, error) {
 			callCount++
 			if callCount == 1 {
-				// Step 1: Request tool call
+				// Initial model turn requests knowledge base lookup
 				return LLMResponse{
 					Content: `{"action": "tool_call", "tool_name": "search_kb", "arguments": {"query": "auth"}}`,
 					Usage:   &TokenUsage{PromptTokens: 25, CompletionTokens: 15, TotalTokens: 40},
 				}, nil
 			}
-			// Step 2: Final decision
+			// Subsequent turn incorporates tool observations into final synthesis
 			if !strings.Contains(request.Prompt, "[Tool Result for search_kb]") {
 				return LLMResponse{}, fmt.Errorf("expected tool result in step 2 prompt")
 			}
@@ -792,5 +792,71 @@ func TestBoundedLoop_TemporalRetryClassification(t *testing.T) {
 				t.Errorf("expected category %s for %v, got %s", tc.expected, tc.err, category)
 			}
 		})
+	}
+}
+
+// 17. Active Learning Calibration Sampling: every Nth autonomous decision is escalated for calibration
+func TestBoundedLoop_ActiveLearningCalibrationSampling(t *testing.T) {
+	tenantID, agentID, versionID, cfg := setupAgentConfig(nil, standardDecisionSchema, domain.ExecutionModeDurable, 0.85)
+	configProvider := NewMockConfigProvider()
+	configProvider.SetConfig(tenantID, agentID, versionID, cfg)
+
+	llmClient := NewMockLLMClient()
+	llmClient.Response = LLMResponse{
+		Content: `{"sentiment": "positive", "confidence": 0.95}`,
+	}
+
+	relService := &MockReliabilityService{
+		EvaluateFunc: func(ctx context.Context, req ReliabilityRequest) (ReliabilityEvaluation, error) {
+			return ReliabilityEvaluation{
+				Decision:   ReliabilityAllow,
+				Confidence: 0.95,
+				ReasonCode: "CONFIDENCE_ABOVE_THRESHOLD",
+			}, nil
+		},
+	}
+
+	// Configure calibration interval to 3: 1st and 2nd should allow (success), 3rd should escalate as calibration sample
+	exec, err := NewLLMExecutor(llmClient, configProvider, WithReliabilityService(relService), WithCalibrationInterval(3))
+	if err != nil {
+		t.Fatalf("failed to create executor: %v", err)
+	}
+
+	input := ExecutionInput{TenantID: tenantID, AgentID: agentID, AgentVersionID: versionID, Payload: map[string]any{"query": "evaluate"}}
+
+	// Iteration 1: Allowed / Success
+	res1, err := exec.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("execution 1 failed: %v", err)
+	}
+	if res1.Status != StatusSuccess {
+		t.Errorf("expected StatusSuccess on iteration 1, got %s", res1.Status)
+	}
+
+	// Iteration 2: Allowed / Success
+	res2, err := exec.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("execution 2 failed: %v", err)
+	}
+	if res2.Status != StatusSuccess {
+		t.Errorf("expected StatusSuccess on iteration 2, got %s", res2.Status)
+	}
+
+	// Iteration 3: 3rd autonomous decision sampled for active learning calibration!
+	res3, err := exec.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("execution 3 failed: %v", err)
+	}
+	if res3.Status != StatusEscalated {
+		t.Errorf("expected StatusEscalated on iteration 3 (sampled for calibration), got %s", res3.Status)
+	}
+	if res3.Escalation == nil || res3.Escalation.Target != "calibration_review" {
+		t.Errorf("expected target 'calibration_review', got %+v", res3.Escalation)
+	}
+	if res3.Output["reason_code"] != "CALIBRATION_SAMPLE" {
+		t.Errorf("expected reason_code 'CALIBRATION_SAMPLE', got %v", res3.Output["reason_code"])
+	}
+	if res3.Output["calibration_sampling"] != true {
+		t.Errorf("expected calibration_sampling=true, got %v", res3.Output["calibration_sampling"])
 	}
 }

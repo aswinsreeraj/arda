@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"github.com/aswinsreeraj/arda/pkg/database"
 	"github.com/aswinsreeraj/arda/pkg/mcp"
@@ -16,7 +19,13 @@ import (
 	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	"github.com/aswinsreeraj/arda/pkg/vault"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
+	reviewgrpc "github.com/aswinsreeraj/arda/services/review/grpc"
+	reviewservice "github.com/aswinsreeraj/arda/services/review/service"
+	reviewstore "github.com/aswinsreeraj/arda/services/review/store"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 func loadEnv(filepath string) {
@@ -113,12 +122,14 @@ func main() {
 	// Tenant BYOK credential resolution via HashiCorp Vault
 	vaultCfg := vault.ConfigFromEnv()
 	var credResolver agentruntime.CredentialResolver
+	var vaultClient vault.SecretStore
 
 	if vaultCfg.Address != "" && vaultCfg.Token != "" {
-		vaultClient, err := vault.NewClient(vaultCfg)
+		vc, err := vault.NewClient(vaultCfg)
 		if err != nil {
 			log.Fatalf("FATAL: Failed to initialize Vault client: %v", err)
 		}
+		vaultClient = vc
 		vaultResolver, err := agentruntime.NewVaultCredentialResolver(vaultClient)
 		if err != nil {
 			log.Fatalf("FATAL: Failed to initialize Vault credential resolver: %v", err)
@@ -146,9 +157,17 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize dynamic resolving LLM client: %v", err)
 	}
 
+	// Initialize Database Connection
+	db, err := database.Connect(database.LoadConfigFromEnv())
+	if err != nil {
+		log.Printf("WARN: Database connection failed: %v", err)
+	} else {
+		defer db.Close()
+	}
+
 	// Initialize Tool Registry & Audit Store for Tool Gateway
 	var toolStore toolgateway.Store
-	if db, err := database.Connect(database.LoadConfigFromEnv()); err == nil {
+	if db != nil {
 		if gs, err := toolgateway.NewGormStore(db.DB); err == nil {
 			toolStore = gs
 		} else {
@@ -159,10 +178,52 @@ func main() {
 	}
 	toolRegistry := toolgateway.NewRegistry(toolStore)
 
-	// Initialize MCP Connection Manager with local simulator fallback
-	mcpManager := mcp.NewConnectionManager(mcp.ManagerConfig{AllowLocalhost: true})
+	// Initialize MCP Connection Manager with local simulator fallback and Vault credential resolver
+	var mcpCredResolver mcp.CredentialResolver
+	if vaultClient != nil {
+		mcpCredResolver, _ = mcp.NewVaultCredentialResolver(vaultClient)
+	}
+	mcpManager := mcp.NewConnectionManager(mcp.ManagerConfig{
+		AllowLocalhost:     true,
+		CredentialResolver: mcpCredResolver,
+	})
 	sim := simulator.NewTransactionSimulator(uuid.Nil)
 	_ = mcpManager.RegisterInProcessServer("mcp-tx-conn", uuid.Nil, sim.Server())
+
+	// Register Obsidian MCP connection definition
+	obsidianEndpoint := os.Getenv("OBSIDIAN_MCP_ENDPOINT")
+	if obsidianEndpoint == "" {
+		obsidianEndpoint = "https://127.0.0.1:27124/mcp"
+	}
+	obsidianConn := mcp.ConnectionDefinition{
+		ID:            "obsidian-mcp",
+		TenantID:      uuid.Nil,
+		ServerName:    "obsidian-mcp",
+		Endpoint:      obsidianEndpoint,
+		Transport:     mcp.TransportStreamableHTTP,
+		CredentialRef: "secret:credentials/mcp/obsidian-mcp#access_token",
+	}
+	if conn, err := mcpManager.RegisterConnection(context.Background(), obsidianConn); err != nil {
+		log.Printf("ERROR: Failed to register global obsidian-mcp connection: %v", err)
+	} else {
+		log.Printf("Successfully registered global MCP connection: %s", conn.ID)
+	}
+
+	// Register Obsidian connection for all active tenants in DB
+	if db != nil {
+		var tenantIDs []uuid.UUID
+		if err := db.DB.Table("tenants").Pluck("id", &tenantIDs).Error; err == nil {
+			for _, tid := range tenantIDs {
+				tConn := obsidianConn
+				tConn.TenantID = tid
+				if _, err := mcpManager.RegisterConnection(context.Background(), tConn); err != nil {
+					log.Printf("WARN: Failed to register obsidian-mcp connection for tenant %s: %v", tid, err)
+				} else {
+					log.Printf("Successfully registered MCP connection: %s for tenant %s", tConn.ID, tid)
+				}
+			}
+		}
+	}
 
 	handlers := toolgateway.NewHandlerRegistry()
 	handlers.Register("mcp:mcp-tx-conn:get_transaction", mcp.NewToolHandler(mcpManager, "mcp-tx-conn", "get_transaction"))
@@ -191,12 +252,26 @@ func main() {
 		ConfigProvider:  configProvider,
 	})
 
-	executor, err := agentruntime.NewLLMExecutor(
-		resolvingClient,
-		configProvider,
+	execOpts := []agentruntime.LLMExecutorOption{
 		agentruntime.WithDefaultModel("gpt-4o"),
 		agentruntime.WithDefaultExecutorProvider(defaultProvider),
 		agentruntime.WithToolGateway(toolGw),
+		agentruntime.WithCalibrationInterval(10), // Every 10th autonomous decision is escalated for calibration
+	}
+	relAddr := os.Getenv("RELIABILITY_SERVICE_ADDR")
+	if relAddr != "" {
+		if relClient, err := proxy.NewReliabilityClient(relAddr); err == nil {
+			execOpts = append(execOpts, agentruntime.WithReliabilityService(proxy.NewRuntimeAdapter(relClient)))
+			log.Printf("Worker connected to Reliability Service at %s", relAddr)
+		} else {
+			log.Printf("WARN: Failed to connect to Reliability Service at %s: %v", relAddr, err)
+		}
+	}
+
+	executor, err := agentruntime.NewLLMExecutor(
+		resolvingClient,
+		configProvider,
+		execOpts...,
 	)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize LLM executor: %v", err)
@@ -207,7 +282,43 @@ func main() {
 		log.Fatalf("FATAL: Failed to initialize agent runtime: %v", err)
 	}
 
-	w, err := temporal.NewWorker(cfg, nil, temporal.WithAgentRuntime(rt))
+	// Initialize ReviewServiceClient so escalated executions create review cases
+	var reviewClient ardav1.ReviewServiceClient
+	if db != nil {
+		revStore := reviewstore.NewPostgresStore(db.DB)
+		var signaler reviewservice.TemporalSignaler
+		if tempClient, err := temporal.NewClient(cfg); err == nil {
+			signaler = tempClient.RawClient()
+		}
+		revSvc := reviewservice.NewService(
+			revStore,
+			reviewservice.WithTemporalSignaler(signaler),
+		)
+		reviewGRPCServer := reviewgrpc.NewServer(revSvc)
+		lis := bufconn.Listen(1024 * 1024)
+		go func() {
+			_ = reviewGRPCServer.Serve(lis)
+		}()
+		conn, err := grpc.NewClient("passthrough://bufnet-worker-review",
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return lis.Dial()
+			}),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err == nil {
+			reviewClient = ardav1.NewReviewServiceClient(conn)
+			log.Printf("  Review Service:   in-process connected (bufconn)")
+		}
+	}
+
+	workerOpts := []temporal.WorkerOption{
+		temporal.WithAgentRuntime(rt),
+	}
+	if reviewClient != nil {
+		workerOpts = append(workerOpts, temporal.WithReviewClient(reviewClient))
+	}
+
+	w, err := temporal.NewWorker(cfg, nil, workerOpts...)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to initialize Temporal worker: %v", err)
 	}

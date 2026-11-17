@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	ErrUserNotFound            = errors.New("user not found")
-	ErrUserAlreadyExists       = errors.New("user with this email already exists")
-	ErrTenantNotFound          = errors.New("tenant not found")
+	ErrUserNotFound                 = errors.New("user not found")
+	ErrUserAlreadyExists            = errors.New("user with this email already exists")
+	ErrTenantNotFound               = errors.New("tenant not found")
 	ErrMembershipNotFound           = errors.New("tenant membership not found")
 	ErrMembershipAlreadyExists      = errors.New("user already has a membership in this tenant")
 	ErrCannotRemoveLastAdmin        = errors.New("cannot remove or demote the last active tenant administrator")
@@ -37,6 +37,12 @@ type Store interface {
 	CreateTenantWithAdmin(ctx context.Context, tenant *Tenant, adminUserID uuid.UUID) (*Tenant, *Membership, error)
 	RegisterTenantWithAdmin(ctx context.Context, tenant *Tenant, user *User) (*Tenant, *User, *Membership, error)
 	GetTenantByID(ctx context.Context, id uuid.UUID) (*Tenant, error)
+	ListTenants(ctx context.Context) ([]TenantWithStats, error)
+	UpdateTenantStatus(ctx context.Context, tenantID uuid.UUID, status string) (*Tenant, error)
+
+	ListSuperAdmins(ctx context.Context) ([]SafeUser, error)
+	CreateOrPromoteSuperAdmin(ctx context.Context, email, passwordHash, displayName string) (*SafeUser, error)
+	GetPlatformStats(ctx context.Context) (map[string]int64, error)
 
 	CreateMembership(ctx context.Context, membership *Membership) error
 	GetMembership(ctx context.Context, userID, tenantID uuid.UUID) (*Membership, error)
@@ -53,8 +59,9 @@ type Store interface {
 	CreateInvitation(ctx context.Context, inv *Invitation) error
 	GetInvitationByToken(ctx context.Context, token string) (*Invitation, error)
 	AcceptInvitation(ctx context.Context, token, fullName, passwordHash string) (*User, *Membership, *Tenant, error)
+	DeleteInvitation(ctx context.Context, tenantID, invitationID uuid.UUID) error
+	DeleteInvitationByEmail(ctx context.Context, tenantID uuid.UUID, email string) error
 }
-
 
 // UserModel maps to the 'app_users' table.
 type UserModel struct {
@@ -183,7 +190,6 @@ func (m *InvitationModel) ToDomain() *Invitation {
 		AcceptedAt: m.AcceptedAt,
 	}
 }
-
 
 // PostgresStore implements Store backed by PostgreSQL via GORM.
 type PostgresStore struct {
@@ -436,6 +442,149 @@ func (s *PostgresStore) GetTenantByID(ctx context.Context, id uuid.UUID) (*Tenan
 	return model.ToDomain(), nil
 }
 
+func (s *PostgresStore) ListTenants(ctx context.Context) ([]TenantWithStats, error) {
+	type row struct {
+		ID          uuid.UUID `gorm:"column:id"`
+		Name        string    `gorm:"column:name"`
+		Status      string    `gorm:"column:status"`
+		CreatedAt   time.Time `gorm:"column:created_at"`
+		UpdatedAt   time.Time `gorm:"column:updated_at"`
+		MemberCount int64     `gorm:"column:member_count"`
+		AgentCount  int64     `gorm:"column:agent_count"`
+	}
+	var rows []row
+	query := `
+		SELECT 
+			t.id, 
+			t.name, 
+			t.status, 
+			t.created_at, 
+			t.updated_at,
+			COALESCE(m.member_count, 0) AS member_count,
+			COALESCE(a.agent_count, 0) AS agent_count
+		FROM tenants t
+		LEFT JOIN (
+			SELECT tenant_id, COUNT(*) AS member_count 
+			FROM tenant_memberships 
+			GROUP BY tenant_id
+		) m ON m.tenant_id = t.id
+		LEFT JOIN (
+			SELECT tenant_id, COUNT(*) AS agent_count 
+			FROM agents 
+			GROUP BY tenant_id
+		) a ON a.tenant_id = t.id
+		ORDER BY t.created_at DESC`
+	if err := s.db.WithContext(ctx).Raw(query).Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list tenants with stats: %w", err)
+	}
+
+	result := make([]TenantWithStats, len(rows))
+	for i, r := range rows {
+		slug := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(r.Name), " ", "-"))
+		result[i] = TenantWithStats{
+			ID:          r.ID,
+			Name:        r.Name,
+			Slug:        slug,
+			Tier:        "enterprise",
+			Status:      r.Status,
+			AgentCount:  r.AgentCount,
+			MemberCount: r.MemberCount,
+			CreatedAt:   r.CreatedAt,
+			UpdatedAt:   r.UpdatedAt,
+		}
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) UpdateTenantStatus(ctx context.Context, tenantID uuid.UUID, status string) (*Tenant, error) {
+	var model TenantModel
+	err := s.db.WithContext(ctx).Where("id = ?", tenantID).First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTenantNotFound
+		}
+		return nil, fmt.Errorf("failed to query tenant: %w", err)
+	}
+	model.Status = status
+	model.UpdatedAt = time.Now().UTC()
+	if err := s.db.WithContext(ctx).Save(&model).Error; err != nil {
+		return nil, fmt.Errorf("failed to update tenant status: %w", err)
+	}
+	return model.ToDomain(), nil
+}
+
+func (s *PostgresStore) ListSuperAdmins(ctx context.Context) ([]SafeUser, error) {
+	var models []UserModel
+	err := s.db.WithContext(ctx).Where("is_super_admin = ?", true).Order("created_at ASC").Find(&models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list super admins: %w", err)
+	}
+	result := make([]SafeUser, len(models))
+	for i, m := range models {
+		result[i] = m.ToDomain().ToSafeUser()
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) CreateOrPromoteSuperAdmin(ctx context.Context, email, passwordHash, displayName string) (*SafeUser, error) {
+	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
+	var model UserModel
+	err := s.db.WithContext(ctx).Where("LOWER(email) = ?", normalizedEmail).First(&model).Error
+	if err == nil {
+		model.IsSuperAdmin = true
+		model.Status = string(UserStatusActive)
+		if displayName != "" {
+			model.DisplayName = displayName
+		}
+		if passwordHash != "" {
+			model.PasswordHash = passwordHash
+		}
+		model.UpdatedAt = time.Now().UTC()
+		if err := s.db.WithContext(ctx).Save(&model).Error; err != nil {
+			return nil, fmt.Errorf("failed to promote existing user: %w", err)
+		}
+		u := model.ToDomain().ToSafeUser()
+		return &u, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("failed to query user: %w", err)
+	}
+
+	now := time.Now().UTC()
+	newUser := UserModel{
+		ID:              uuid.New(),
+		Email:           normalizedEmail,
+		PasswordHash:    passwordHash,
+		DisplayName:     displayName,
+		Status:          string(UserStatusActive),
+		IsSuperAdmin:    true,
+		EmailVerifiedAt: &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := s.db.WithContext(ctx).Create(&newUser).Error; err != nil {
+		return nil, fmt.Errorf("failed to create super admin user: %w", err)
+	}
+	u := newUser.ToDomain().ToSafeUser()
+	return &u, nil
+}
+
+func (s *PostgresStore) GetPlatformStats(ctx context.Context) (map[string]int64, error) {
+	var activeTenants, totalTenants, totalAgents, totalInvocations, totalReviews int64
+	s.db.WithContext(ctx).Table("tenants").Where("status = ?", "active").Count(&activeTenants)
+	s.db.WithContext(ctx).Table("tenants").Count(&totalTenants)
+	s.db.WithContext(ctx).Table("agents").Count(&totalAgents)
+	s.db.WithContext(ctx).Table("tool_invocations").Count(&totalInvocations)
+	s.db.WithContext(ctx).Table("review_cases").Count(&totalReviews)
+	return map[string]int64{
+		"active_tenants":    activeTenants,
+		"total_tenants":     totalTenants,
+		"total_agents":      totalAgents,
+		"total_invocations": totalInvocations,
+		"total_reviews":     totalReviews,
+	}, nil
+}
+
 func (s *PostgresStore) CreateMembership(ctx context.Context, m *Membership) error {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
@@ -564,7 +713,6 @@ func (s *PostgresStore) ListTenantMembers(ctx context.Context, tenantID uuid.UUI
 
 	return members, nil
 }
-
 
 func (s *PostgresStore) UpdateMembership(ctx context.Context, m *Membership) error {
 	m.UpdatedAt = time.Now().UTC()
@@ -835,6 +983,32 @@ func (s *PostgresStore) AcceptInvitation(ctx context.Context, token, fullName, p
 	return user, membership, tenant, nil
 }
 
+func (s *PostgresStore) DeleteInvitation(ctx context.Context, tenantID, invitationID uuid.UUID) error {
+	res := s.db.WithContext(ctx).
+		Where("id = ? AND tenant_id = ?", invitationID, tenantID).
+		Delete(&InvitationModel{})
+	if res.Error != nil {
+		return fmt.Errorf("failed to delete invitation: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrInvitationNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteInvitationByEmail(ctx context.Context, tenantID uuid.UUID, email string) error {
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	res := s.db.WithContext(ctx).
+		Where("LOWER(TRIM(email)) = ? AND tenant_id = ?", normEmail, tenantID).
+		Delete(&InvitationModel{})
+	if res.Error != nil {
+		return fmt.Errorf("failed to delete invitation by email: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrInvitationNotFound
+	}
+	return nil
+}
 
 // MemoryStore provides a thread-safe in-memory Store implementation for testing.
 type MemoryStore struct {
@@ -858,7 +1032,6 @@ func NewMemoryStore() *MemoryStore {
 		invitations:   make(map[string]*InvitationModel),
 	}
 }
-
 
 func (m *MemoryStore) CreateUser(ctx context.Context, u *User) error {
 	m.mu.Lock()
@@ -1044,6 +1217,115 @@ func (m *MemoryStore) GetTenantByID(ctx context.Context, id uuid.UUID) (*Tenant,
 	return &copied, nil
 }
 
+func (m *MemoryStore) ListTenants(ctx context.Context) ([]TenantWithStats, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]TenantWithStats, 0, len(m.tenants))
+	for _, t := range m.tenants {
+		var memberCount int64
+		for _, mem := range m.memberships {
+			if mem.TenantID == t.ID {
+				memberCount++
+			}
+		}
+		slug := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(t.Name), " ", "-"))
+		result = append(result, TenantWithStats{
+			ID:          t.ID,
+			Name:        t.Name,
+			Slug:        slug,
+			Tier:        "enterprise",
+			Status:      t.Status,
+			AgentCount:  0,
+			MemberCount: memberCount,
+			CreatedAt:   t.CreatedAt,
+			UpdatedAt:   t.UpdatedAt,
+		})
+	}
+	return result, nil
+}
+
+func (m *MemoryStore) UpdateTenantStatus(ctx context.Context, tenantID uuid.UUID, status string) (*Tenant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tenants[tenantID]
+	if !ok {
+		return nil, ErrTenantNotFound
+	}
+	t.Status = status
+	t.UpdatedAt = time.Now().UTC()
+	m.tenants[tenantID] = t
+	cp := *t
+	return &cp, nil
+}
+
+func (m *MemoryStore) ListSuperAdmins(ctx context.Context) ([]SafeUser, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []SafeUser
+	for _, u := range m.users {
+		if u.IsSuperAdmin {
+			result = append(result, u.ToSafeUser())
+		}
+	}
+	return result, nil
+}
+
+func (m *MemoryStore) CreateOrPromoteSuperAdmin(ctx context.Context, email, passwordHash, displayName string) (*SafeUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	for id, u := range m.users {
+		if strings.EqualFold(u.Email, normalized) {
+			u.IsSuperAdmin = true
+			u.Status = UserStatusActive
+			if displayName != "" {
+				u.DisplayName = displayName
+			}
+			if passwordHash != "" {
+				u.PasswordHash = passwordHash
+			}
+			u.UpdatedAt = time.Now().UTC()
+			m.users[id] = u
+			safe := u.ToSafeUser()
+			return &safe, nil
+		}
+	}
+
+	now := time.Now().UTC()
+	newUser := &User{
+		ID:              uuid.New(),
+		Email:           normalized,
+		PasswordHash:    passwordHash,
+		DisplayName:     displayName,
+		Status:          UserStatusActive,
+		IsSuperAdmin:    true,
+		EmailVerifiedAt: &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	m.users[newUser.ID] = newUser
+	safe := newUser.ToSafeUser()
+	return &safe, nil
+}
+
+func (m *MemoryStore) GetPlatformStats(ctx context.Context) (map[string]int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var activeTenants int64
+	for _, t := range m.tenants {
+		if t.Status == "active" {
+			activeTenants++
+		}
+	}
+	return map[string]int64{
+		"active_tenants":    activeTenants,
+		"total_tenants":     int64(len(m.tenants)),
+		"total_agents":      0,
+		"total_invocations": 0,
+		"total_reviews":     0,
+	}, nil
+}
+
 func (m *MemoryStore) CreateMembership(ctx context.Context, mem *Membership) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1151,7 +1433,6 @@ func (m *MemoryStore) ListTenantMembers(ctx context.Context, tenantID uuid.UUID)
 
 	return res, nil
 }
-
 
 func (m *MemoryStore) UpdateMembership(ctx context.Context, mem *Membership) error {
 	m.mu.Lock()
@@ -1401,4 +1682,29 @@ func (m *MemoryStore) AcceptInvitation(ctx context.Context, token, fullName, pas
 	return &uRes, &mRes, &tRes, nil
 }
 
+func (m *MemoryStore) DeleteInvitation(ctx context.Context, tenantID, invitationID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
+	for token, inv := range m.invitations {
+		if inv.ID == invitationID && inv.TenantID == tenantID {
+			delete(m.invitations, token)
+			return nil
+		}
+	}
+	return ErrInvitationNotFound
+}
+
+func (m *MemoryStore) DeleteInvitationByEmail(ctx context.Context, tenantID uuid.UUID, email string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	for token, inv := range m.invitations {
+		if strings.EqualFold(inv.Email, normEmail) && inv.TenantID == tenantID {
+			delete(m.invitations, token)
+			return nil
+		}
+	}
+	return ErrInvitationNotFound
+}

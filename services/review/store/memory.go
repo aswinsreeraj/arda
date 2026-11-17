@@ -82,6 +82,7 @@ func (m *MemoryStore) ListCases(ctx context.Context, filter domain.ListFilter) (
 	defer m.mu.RUnlock()
 
 	status := filter.Status
+	isAll := strings.EqualFold(string(status), "all") || string(status) == "*"
 	if status == "" {
 		status = domain.CaseStatusOpen
 	}
@@ -91,7 +92,7 @@ func (m *MemoryStore) ListCases(ctx context.Context, filter domain.ListFilter) (
 		if c.TenantID != filter.TenantID {
 			continue
 		}
-		if c.Status != status {
+		if !isAll && c.Status != status {
 			continue
 		}
 		if filter.AgentID != uuid.Nil && c.AgentID != filter.AgentID {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aswinsreeraj/arda/services/review/domain"
@@ -107,10 +108,11 @@ func (s *PostgresStore) ListCases(ctx context.Context, filter domain.ListFilter)
 	query := s.db.WithContext(ctx).Model(&ReviewCaseModel{}).Where("tenant_id = ?", filter.TenantID)
 
 	status := filter.Status
-	if status == "" {
-		status = domain.CaseStatusOpen
+	if status != "" && !strings.EqualFold(string(status), "all") && string(status) != "*" {
+		query = query.Where("status = ?", string(status))
+	} else if status == "" {
+		query = query.Where("status = ?", string(domain.CaseStatusOpen))
 	}
-	query = query.Where("status = ?", string(status))
 
 	if filter.AgentID != uuid.Nil {
 		query = query.Where("agent_id = ?", filter.AgentID)

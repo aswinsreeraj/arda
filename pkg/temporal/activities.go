@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
@@ -252,22 +252,25 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 		})
 		outCtx := metadata.NewOutgoingContext(ctx, md)
 
+		relThreshold := 0.85
 		createReq := &ardav1.CreateReviewCaseRequest{
-			TenantId:           input.TenantID.String(),
-			ExecutionId:        input.ExecutionID,
-			AgentId:            input.AgentID.String(),
-			AgentName:          fmt.Sprintf("Agent-%s", input.AgentID.String()[:8]),
-			AgentVersionId:     input.AgentVersionID.String(),
-			ExecutionMode:      "durable",
-			ProposedDecision:   proposed,
-			Confidence:         conf,
-			EscalationReasons:  reasons,
+			TenantId:             input.TenantID.String(),
+			ExecutionId:          input.ExecutionID,
+			AgentId:              input.AgentID.String(),
+			AgentName:            fmt.Sprintf("Agent-%s", input.AgentID.String()[:8]),
+			AgentVersionId:       input.AgentVersionID.String(),
+			ExecutionMode:        "durable",
+			ProposedDecision:     proposed,
+			Confidence:           conf,
+			ReliabilityThreshold: relThreshold,
+			EscalationReasons:    reasons,
 			FrozenEvidence: &ardav1.FrozenEvidence{
-				OriginalInput:     origInput,
-				AgentReasoning:    res.Reason,
-				ProposedDecision:  proposed,
-				Confidence:        conf,
-				EscalationReasons: reasons,
+				OriginalInput:        origInput,
+				AgentReasoning:       res.Reason,
+				ProposedDecision:     proposed,
+				Confidence:           conf,
+				ReliabilityThreshold: relThreshold,
+				EscalationReasons:    reasons,
 			},
 		}
 

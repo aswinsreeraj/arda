@@ -74,3 +74,16 @@ type VerifyCredentialResponse struct {
 	Reference string    `json:"reference"`
 	Message   string    `json:"message"`
 }
+
+// CredentialModelInfo represents an LLM model returned by a provider API.
+type CredentialModelInfo struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+// CredentialModelsResponse contains the list of active models fetched for a credential.
+type CredentialModelsResponse struct {
+	CredentialID uuid.UUID             `json:"credential_id"`
+	Provider     string                `json:"provider"`
+	Models       []CredentialModelInfo `json:"models"`
+}

@@ -14,8 +14,8 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/auth"
 	gatewayhttp "github.com/aswinsreeraj/arda/services/gateway/http"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
-	reviewgrpc "github.com/aswinsreeraj/arda/services/review/grpc"
 	reviewdomain "github.com/aswinsreeraj/arda/services/review/domain"
+	reviewgrpc "github.com/aswinsreeraj/arda/services/review/grpc"
 	reviewservice "github.com/aswinsreeraj/arda/services/review/service"
 	reviewstore "github.com/aswinsreeraj/arda/services/review/store"
 	"github.com/google/uuid"
@@ -100,11 +100,11 @@ func TestGateway_ReviewQueueListing(t *testing.T) {
 
 	var listData struct {
 		Cases []struct {
-			CaseID           string   `json:"case_id"`
-			ExecutionID      string   `json:"execution_id"`
-			ProposedDecision string   `json:"proposed_decision"`
-			Status           string   `json:"status"`
-			Confidence       float64  `json:"confidence"`
+			CaseID            string   `json:"case_id"`
+			ExecutionID       string   `json:"execution_id"`
+			ProposedDecision  string   `json:"proposed_decision"`
+			Status            string   `json:"status"`
+			Confidence        float64  `json:"confidence"`
 			EscalationReasons []string `json:"escalation_reasons"`
 		} `json:"cases"`
 		TotalCount int32 `json:"total_count"`

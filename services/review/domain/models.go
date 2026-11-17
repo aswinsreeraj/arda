@@ -71,20 +71,20 @@ type FrozenEvidence struct {
 
 // ReviewCase represents an auditable human review case.
 type ReviewCase struct {
-	ID                   string             `json:"id"`
-	TenantID             uuid.UUID          `json:"tenant_id"`
-	ExecutionID          string             `json:"execution_id"`
-	AgentID              uuid.UUID          `json:"agent_id"`
-	AgentName            string             `json:"agent_name"`
-	AgentVersionID       uuid.UUID          `json:"agent_version_id"`
-	AgentVersionNumber   int                `json:"agent_version_number"`
-	ExecutionMode        string             `json:"execution_mode"` // "realtime" or "durable"
-	Status               CaseStatus         `json:"status"`
-	ProposedDecision     string             `json:"proposed_decision"`
-	Confidence           float64            `json:"confidence"`
-	ReliabilityThreshold float64            `json:"reliability_threshold"`
-	EscalationReasons    []string           `json:"escalation_reasons"`
-	FrozenEvidence       FrozenEvidence     `json:"frozen_evidence"`
+	ID                   string         `json:"id"`
+	TenantID             uuid.UUID      `json:"tenant_id"`
+	ExecutionID          string         `json:"execution_id"`
+	AgentID              uuid.UUID      `json:"agent_id"`
+	AgentName            string         `json:"agent_name"`
+	AgentVersionID       uuid.UUID      `json:"agent_version_id"`
+	AgentVersionNumber   int            `json:"agent_version_number"`
+	ExecutionMode        string         `json:"execution_mode"` // "realtime" or "durable"
+	Status               CaseStatus     `json:"status"`
+	ProposedDecision     string         `json:"proposed_decision"`
+	Confidence           float64        `json:"confidence"`
+	ReliabilityThreshold float64        `json:"reliability_threshold"`
+	EscalationReasons    []string       `json:"escalation_reasons"`
+	FrozenEvidence       FrozenEvidence `json:"frozen_evidence"`
 
 	// Human resolution outcomes
 	Decision         ResolutionDecision `json:"decision,omitempty"`

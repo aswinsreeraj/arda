@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 
 	"github.com/aswinsreeraj/arda/pkg/jsonschema"
 	"github.com/aswinsreeraj/arda/pkg/vault"
@@ -68,20 +69,32 @@ func WithFailClosed(failClosed bool) LLMExecutorOption {
 	}
 }
 
+// WithCalibrationInterval specifies the periodic interval N at which autonomous decisions
+// are escalated for active learning calibration (every Nth autonomous decision).
+func WithCalibrationInterval(n int) LLMExecutorOption {
+	return func(e *LLMExecutor) {
+		if n > 0 {
+			e.calibrationInterval = n
+		}
+	}
+}
+
 // LLMExecutor executes an agent run by fetching its pinned version configuration,
 // rendering the prompt template against the execution payload, invoking the provider-independent
 // LLMClient, dispatching tools through ToolGateway, enforcing budgets, consulting the ReliabilityService,
 // and packaging the outcome into a validated ExecutionResult.
 type LLMExecutor struct {
-	llmClient          LLMClient
-	configProvider     AgentConfigProvider
-	promptBuilder      *PromptBuilder
-	toolGateway        ToolGateway
-	reliabilityService ReliabilityService
-	budgetConfig       *BudgetConfig
-	failClosed         bool
-	defaultModel       string
-	defaultProvider    string
+	llmClient           LLMClient
+	configProvider      AgentConfigProvider
+	promptBuilder       *PromptBuilder
+	toolGateway         ToolGateway
+	reliabilityService  ReliabilityService
+	budgetConfig        *BudgetConfig
+	failClosed          bool
+	defaultModel        string
+	defaultProvider     string
+	calibrationInterval int
+	autonomousCounter   uint64
 }
 
 // NewLLMExecutor creates an LLMExecutor with mandatory LLMClient and AgentConfigProvider dependencies.
@@ -94,10 +107,11 @@ func NewLLMExecutor(llmClient LLMClient, configProvider AgentConfigProvider, opt
 	}
 
 	exec := &LLMExecutor{
-		llmClient:      llmClient,
-		configProvider: configProvider,
-		promptBuilder:  NewPromptBuilder(),
-		failClosed:     true,
+		llmClient:           llmClient,
+		configProvider:      configProvider,
+		promptBuilder:       NewPromptBuilder(),
+		failClosed:          true,
+		calibrationInterval: 10, // Default: every 10th autonomous decision is sampled for calibration
 	}
 
 	for _, opt := range opts {
@@ -105,6 +119,14 @@ func NewLLMExecutor(llmClient LLMClient, configProvider AgentConfigProvider, opt
 	}
 
 	return exec, nil
+}
+
+func (e *LLMExecutor) isCalibrationSample() bool {
+	if e.calibrationInterval <= 0 {
+		return false
+	}
+	count := atomic.AddUint64(&e.autonomousCounter, 1)
+	return count%uint64(e.calibrationInterval) == 0
 }
 
 // Execute runs the agent against the provided input payload. It enforces execution budgets,
@@ -314,7 +336,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 			}
 
 			// Append sanitized tool result to model context for next iteration
-			currentPrompt = fmt.Sprintf("%s\n\n[Tool Result for %s]:\n%s\n\nBased on this tool result, continue with the next step or return your final decision.", currentPrompt, toolName, resultOutput)
+			currentPrompt = fmt.Sprintf("%s\n\n[Tool Result for %s]:\n%s\n\nTool execution completed. If the requested operation is done, you MUST NOT repeat the tool call. Output your final decision now as a JSON object, e.g.:\n{\"status\": \"completed\", \"summary\": \"Task finished successfully\"}", currentPrompt, toolName, resultOutput)
 
 		case "escalate":
 			reason := "human review requested by agent"
@@ -408,7 +430,35 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 
 				switch relEval.Decision {
 				case ReliabilityAllow:
-					// Proceed with Decision
+					// Periodic calibration sampling: every Nth autonomous decision is escalated for active learning calibration
+					if e.isCalibrationSample() {
+						usage := tracker.TokenUsage()
+						reason := fmt.Sprintf("Active learning calibration sample (1-in-%d): autonomous decision routed for human review", e.calibrationInterval)
+						return ExecutionResult{
+							Status:  StatusEscalated,
+							Outcome: OutcomeTypeEscalation,
+							Escalation: &EscalationInfo{
+								Reason: reason,
+								Target: "calibration_review",
+							},
+							Output: map[string]any{
+								"escalation_reason":    reason,
+								"confidence":           relEval.Confidence,
+								"reason_code":          "CALIBRATION_SAMPLE",
+								"calibration_sampling": true,
+								"content":              resp.Content,
+							},
+							Metadata: &ExecutionMetadata{
+								Iterations:          tracker.Iterations(),
+								ToolInvocations:     tracker.ToolInvocations(),
+								PromptTokens:        usage.PromptTokens,
+								CompletionTokens:    usage.CompletionTokens,
+								TotalTokens:         usage.TotalTokens,
+								ReliabilityDecision: relDecisionStr,
+							},
+						}, nil
+					}
+					// Otherwise proceed autonomously with Decision
 				case ReliabilityEscalate:
 					usage := tracker.TokenUsage()
 					reason := relEval.Reason
@@ -727,15 +777,69 @@ type escalationAction struct {
 	Target string `json:"target"`
 }
 
+func cleanJSONStringLiterals(s string) string {
+	var b strings.Builder
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			b.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			b.WriteByte(ch)
+			continue
+		}
+		if inString {
+			if ch == '\n' {
+				b.WriteString("\\n")
+				continue
+			}
+			if ch == '\r' {
+				b.WriteString("\\r")
+				continue
+			}
+			if ch == '\t' {
+				b.WriteString("\\t")
+				continue
+			}
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
 func parseModelAction(content string) (actionType string, toolCall *toolCallAction, escalate *escalationAction, decisionPayload any, err error) {
 	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 && strings.HasPrefix(lines[0], "```") {
+			trimmed = strings.Join(lines[1:], "\n")
+		}
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+		trimmed = strings.TrimSpace(trimmed)
+	}
+
 	if !strings.HasPrefix(trimmed, "{") {
 		return "decision", nil, nil, content, nil
 	}
 
 	var m map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
-		return "decision", nil, nil, content, nil
+		cleaned := cleanJSONStringLiterals(trimmed)
+		if err2 := json.Unmarshal([]byte(cleaned), &m); err2 != nil {
+			return "decision", nil, nil, content, nil
+		}
 	}
 
 	actionStr, _ := m["action"].(string)
@@ -791,6 +895,11 @@ func parseModelAction(content string) (actionType string, toolCall *toolCallActi
 }
 
 func computeToolFingerprint(name string, args map[string]any) string {
+	if name == "vault_write" {
+		if path, ok := args["path"].(string); ok && path != "" {
+			return fmt.Sprintf("%s:path=%s", name, path)
+		}
+	}
 	b, err := json.Marshal(args)
 	if err != nil {
 		return name + ":error"

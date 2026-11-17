@@ -17,6 +17,9 @@ const (
 	ActionCredentialManage   Action = "credential:manage"
 	ActionCredentialRead     Action = "credential:read"
 	ActionTenantCreate       Action = "tenant:create"
+	ActionTenantManage       Action = "tenant:manage"
+	ActionTenantRead         Action = "tenant:read"
+	ActionPlatformManage     Action = "platform:manage"
 	ActionTenantMemberManage Action = "tenant:member:manage"
 	ActionTenantMemberRead   Action = "tenant:member:read"
 	ActionToolCreate         Action = "tool:create"
@@ -43,6 +46,9 @@ var Policy = map[Role]map[Action]bool{
 		ActionCredentialManage:   false,
 		ActionCredentialRead:     false,
 		ActionTenantCreate:       true,  // Full for /tenants platform management
+		ActionTenantManage:       true,  // Suspend/activate/manage platform tenants
+		ActionTenantRead:         true,  // List platform tenants
+		ActionPlatformManage:     true,  // Super admin and platform operations
 		ActionTenantMemberManage: false, // Tenant scoped
 		ActionTenantMemberRead:   false, // Tenant scoped
 		ActionToolCreate:         false,
@@ -66,7 +72,10 @@ var Policy = map[Role]map[Action]bool{
 		ActionCredentialManage:   true,
 		ActionCredentialRead:     true,
 		ActionTenantCreate:       false, // Platform tenants managed by super_admin
-		ActionTenantMemberManage: true,  // Full for own tenant
+		ActionTenantManage:       false,
+		ActionTenantRead:         false,
+		ActionPlatformManage:     false,
+		ActionTenantMemberManage: true, // Full for own tenant
 		ActionTenantMemberRead:   true,
 		ActionToolCreate:         true,
 		ActionToolRead:           true,
@@ -89,6 +98,9 @@ var Policy = map[Role]map[Action]bool{
 		ActionCredentialManage:   false, // Read-only per matrix
 		ActionCredentialRead:     true,
 		ActionTenantCreate:       false,
+		ActionTenantManage:       false,
+		ActionTenantRead:         false,
+		ActionPlatformManage:     false,
 		ActionTenantMemberManage: false, // Self only via /auth/me
 		ActionTenantMemberRead:   false,
 		ActionToolCreate:         true,
@@ -112,6 +124,9 @@ var Policy = map[Role]map[Action]bool{
 		ActionCredentialManage:   false, // No access (-)
 		ActionCredentialRead:     false,
 		ActionTenantCreate:       false,
+		ActionTenantManage:       false,
+		ActionTenantRead:         false,
+		ActionPlatformManage:     false,
 		ActionTenantMemberManage: false, // Self only via /auth/me
 		ActionTenantMemberRead:   false,
 		ActionToolCreate:         false,

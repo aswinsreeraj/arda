@@ -112,8 +112,8 @@ func TestRegistryConfigProvider_Success(t *testing.T) {
 	if cfg.PromptTemplate != "Answer: {{query}}" {
 		t.Errorf("expected prompt template 'Answer: {{query}}', got %q", cfg.PromptTemplate)
 	}
-	if cfg.ExecutionMode != domain.ExecutionModeAutonomous {
-		t.Errorf("expected autonomous mode, got %s", cfg.ExecutionMode)
+	if cfg.ExecutionMode != domain.ExecutionModeRealtime {
+		t.Errorf("expected realtime mode, got %s", cfg.ExecutionMode)
 	}
 	if cfg.ReliabilityThreshold != 0.90 {
 		t.Errorf("expected reliability threshold 0.90, got %f", cfg.ReliabilityThreshold)

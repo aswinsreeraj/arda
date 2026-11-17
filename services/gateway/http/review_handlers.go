@@ -33,7 +33,9 @@ func handleListReviews(c *gin.Context, client ardav1.ReviewServiceClient) {
 	}
 
 	statusFilter := c.Query("status")
-	if statusFilter == "" {
+	if strings.EqualFold(statusFilter, "all") || statusFilter == "*" {
+		statusFilter = "ALL"
+	} else if statusFilter == "" {
 		statusFilter = "OPEN"
 	}
 
@@ -203,11 +205,11 @@ func handleGetReview(c *gin.Context, client ardav1.ReviewServiceClient) {
 
 	if rc.GetStatus() == "RESOLVED" {
 		resObj := map[string]any{
-			"decision":         rc.GetDecision(),
-			"final_decision":   rc.GetFinalDecision(),
+			"decision":          rc.GetDecision(),
+			"final_decision":    rc.GetFinalDecision(),
 			"resolution_reason": rc.GetResolutionReason(),
-			"reviewer_id":      rc.GetReviewerId(),
-			"audit_record_id":  rc.GetAuditRecordId(),
+			"reviewer_id":       rc.GetReviewerId(),
+			"audit_record_id":   rc.GetAuditRecordId(),
 		}
 		if rc.GetResolvedAt() != nil {
 			resObj["resolved_at"] = rc.GetResolvedAt().AsTime().Format("2006-01-02T15:04:05Z07:00")

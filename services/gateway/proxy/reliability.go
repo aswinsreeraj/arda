@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
+	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -58,4 +59,54 @@ func (c *GRPCClient) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+// RuntimeAdapter adapts a ReliabilityService client to agentruntime.ReliabilityService.
+type RuntimeAdapter struct {
+	client ReliabilityService
+}
+
+// NewRuntimeAdapter constructs an adapter for agentruntime.
+func NewRuntimeAdapter(client ReliabilityService) *RuntimeAdapter {
+	return &RuntimeAdapter{client: client}
+}
+
+// Evaluate evaluates an agent decision using the upstream gRPC Reliability Service.
+func (a *RuntimeAdapter) Evaluate(ctx context.Context, req agentruntime.ReliabilityRequest) (agentruntime.ReliabilityEvaluation, error) {
+	if a == nil || a.client == nil {
+		return agentruntime.ReliabilityEvaluation{}, ErrUnconfigured
+	}
+
+	grpcReq := &ardav1.GateRequest{
+		TenantId:             req.TenantID.String(),
+		AgentId:              req.AgentID.String(),
+		ProposedDecision:     req.ProposedDecision,
+		CaseDescription:      req.CaseDescription,
+		ReliabilityThreshold: req.ReliabilityThreshold,
+	}
+
+	resp, err := a.client.Gate(ctx, grpcReq)
+	if err != nil {
+		return agentruntime.ReliabilityEvaluation{}, err
+	}
+
+	decision := agentruntime.ReliabilityAllow
+	if resp.Outcome == ardav1.GateOutcome_GATE_OUTCOME_REVIEW_REQUIRED {
+		decision = agentruntime.ReliabilityEscalate
+	}
+
+	var calibVer string
+	if resp.CalibrationVersion != nil {
+		calibVer = *resp.CalibrationVersion
+	}
+
+	return agentruntime.ReliabilityEvaluation{
+		Decision:             decision,
+		Confidence:           resp.Confidence,
+		ReasonCode:           resp.ReasonCode,
+		RawScore:             resp.RawScore,
+		CalibratedConfidence: resp.CalibratedConfidence,
+		IsCalibrated:         resp.IsCalibrated,
+		CalibrationVersion:   calibVer,
+	}, nil
 }

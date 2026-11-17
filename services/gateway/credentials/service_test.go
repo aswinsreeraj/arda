@@ -421,4 +421,36 @@ func TestCredential_CrossTenantIsolation(t *testing.T) {
 	if err == nil {
 		t.Fatalf("SECURITY VIOLATION: expected error deleting cross-tenant credential, got nil")
 	}
+
+	// Tenant B cannot list models for Tenant A's credential
+	_, err = svc.ListModels(ctx, tenantB, credA.ID)
+	if err == nil {
+		t.Fatalf("SECURITY VIOLATION: expected error listing models for cross-tenant credential, got nil")
+	}
+}
+
+func TestListModels(t *testing.T) {
+	svc, _, _ := setupTestService()
+	ctx := context.Background()
+	tenantID := uuid.New()
+
+	cred, err := svc.SaveCredential(ctx, tenantID, credentials.SaveCredentialRequest{
+		Category:    credentials.CategoryLLM,
+		Provider:    "mock",
+		SecretValue: "mock-key",
+	})
+	if err != nil {
+		t.Fatalf("failed to save credential: %v", err)
+	}
+
+	resp, err := svc.ListModels(ctx, tenantID, cred.ID)
+	if err != nil {
+		t.Fatalf("failed to list models: %v", err)
+	}
+	if len(resp.Models) == 0 {
+		t.Fatalf("expected models for mock credential, got none")
+	}
+	if resp.Provider != "mock" {
+		t.Errorf("expected provider mock, got %s", resp.Provider)
+	}
 }

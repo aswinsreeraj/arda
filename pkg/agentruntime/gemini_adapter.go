@@ -21,6 +21,13 @@ const ProviderGemini = "gemini"
 
 // DefaultGeminiModels lists standard Google Gemini models.
 var DefaultGeminiModels = []string{
+	"gemini-3.5-flash-lite",
+	"gemini-3.8-flash",
+	"gemini-3.5-flash",
+	"gemini-flash-latest",
+	"gemini-pro-latest",
+	"gemini-2.5-flash",
+	"gemini-2.5-pro",
 	"gemini-1.5-pro",
 	"gemini-1.5-pro-latest",
 	"gemini-1.5-flash",
@@ -110,7 +117,7 @@ func (a *GeminiAdapter) SupportedModels() []string {
 }
 
 func (a *GeminiAdapter) IsModelSupported(model string) bool {
-	trimmed := strings.TrimSpace(model)
+	trimmed := strings.TrimPrefix(strings.TrimSpace(model), "models/")
 	if trimmed == "" {
 		return true // defaults to gemini-1.5-pro
 	}
@@ -184,9 +191,9 @@ func (a *GeminiAdapter) GenerateWithCredential(ctx context.Context, apiKey strin
 		return LLMResponse{}, NewPermanentError("missing required API key for google gemini provider", ErrMissingCredential)
 	}
 
-	model := strings.TrimSpace(req.Model)
+	model := strings.TrimPrefix(strings.TrimSpace(req.Model), "models/")
 	if model == "" {
-		model = "gemini-1.5-pro"
+		model = "gemini-3.5-flash-lite"
 	}
 	if !a.IsModelSupported(model) {
 		return LLMResponse{}, fmt.Errorf("%w: unsupported google gemini model %q", ErrUnsupportedModel, model)

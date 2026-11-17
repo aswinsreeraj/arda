@@ -3,6 +3,7 @@ package temporal
 import (
 	"fmt"
 
+	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -12,13 +13,21 @@ import (
 type WorkerOption func(*workerOptions)
 
 type workerOptions struct {
-	runtime agentruntime.AgentRuntime
+	runtime      agentruntime.AgentRuntime
+	reviewClient ardav1.ReviewServiceClient
 }
 
 // WithAgentRuntime specifies the AgentRuntime instance to inject into the worker's activities.
 func WithAgentRuntime(rt agentruntime.AgentRuntime) WorkerOption {
 	return func(o *workerOptions) {
 		o.runtime = rt
+	}
+}
+
+// WithReviewClient specifies the ReviewServiceClient to inject into the worker's activities.
+func WithReviewClient(rc ardav1.ReviewServiceClient) WorkerOption {
+	return func(o *workerOptions) {
+		o.reviewClient = rc
 	}
 }
 
@@ -56,6 +65,9 @@ func NewWorker(cfg Config, c client.Client, opts ...WorkerOption) (*Worker, erro
 	}
 
 	agentActivities := NewAgentActivities(rt)
+	if optsStruct.reviewClient != nil {
+		agentActivities.SetReviewClient(optsStruct.reviewClient)
+	}
 
 	var ownsClient bool
 	if c == nil {
