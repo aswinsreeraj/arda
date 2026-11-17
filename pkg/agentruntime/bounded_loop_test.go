@@ -860,3 +860,55 @@ func TestBoundedLoop_ActiveLearningCalibrationSampling(t *testing.T) {
 		t.Errorf("expected calibration_sampling=true, got %v", res3.Output["calibration_sampling"])
 	}
 }
+
+func TestBoundedLoop_ReliabilityEscalationPreservesAgentReasoning(t *testing.T) {
+	tenantID, agentID, versionID, cfg := setupAgentConfig(nil, nil, domain.ExecutionModeGated, 0.80)
+	configProvider := NewMockConfigProvider()
+	configProvider.SetConfig(tenantID, agentID, versionID, cfg)
+
+	llmClient := NewMockLLMClient()
+	llmClient.Response = LLMResponse{
+		Content: "```json\n{\"decision\": \"REJECT\", \"reason\": \"Insufficient fraud evidence for $3,500 wire dispute.\"}\n```",
+	}
+
+	relSvc := &MockReliabilityService{
+		EvaluateFunc: func(ctx context.Context, req ReliabilityRequest) (ReliabilityEvaluation, error) {
+			return ReliabilityEvaluation{
+				Decision:   ReliabilityEscalate,
+				Confidence: 0.0,
+				ReasonCode: "RELIABILITY_THRESHOLD_NOT_MET",
+			}, nil
+		},
+	}
+
+	exec, err := NewLLMExecutor(llmClient, configProvider, WithReliabilityService(relSvc))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res, err := exec.Execute(context.Background(), ExecutionInput{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentVersionID: versionID,
+		Payload:        map[string]any{"query": "evaluate $3,500 wire dispute", "amount": 3500},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Status != StatusEscalated {
+		t.Fatalf("expected StatusEscalated, got %s", res.Status)
+	}
+	if res.Output["proposed_decision"] != "REJECT" {
+		t.Errorf("expected proposed_decision=REJECT, got %v", res.Output["proposed_decision"])
+	}
+	wantReasoning := "Insufficient fraud evidence for $3,500 wire dispute."
+	if res.Output["agent_reasoning"] != wantReasoning {
+		t.Errorf("expected agent_reasoning=%q, got %v", wantReasoning, res.Output["agent_reasoning"])
+	}
+	if res.Escalation == nil || !strings.Contains(res.Escalation.Reason, "reliability threshold not met") {
+		t.Errorf("expected reliability escalation reason, got %+v", res.Escalation)
+	}
+	if res.Output["reliability_threshold"] != 0.80 {
+		t.Errorf("expected reliability_threshold=0.80, got %v", res.Output["reliability_threshold"])
+	}
+}

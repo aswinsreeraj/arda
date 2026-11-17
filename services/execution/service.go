@@ -294,6 +294,13 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 			})
 			outCtx := metadata.NewOutgoingContext(ctx, md)
 
+			agentReasoning := ""
+			if r, ok := res.Output["agent_reasoning"].(string); ok && strings.TrimSpace(r) != "" {
+				agentReasoning = strings.TrimSpace(r)
+			} else if c, ok := res.Output["content"].(string); ok && strings.TrimSpace(c) != "" {
+				agentReasoning = agentruntime.ExtractAgentReasoning(c)
+			}
+
 			createReq := &ardav1.CreateReviewCaseRequest{
 				TenantId:             identity.TenantID.String(),
 				ExecutionId:          execID,
@@ -308,7 +315,7 @@ func (s *Service) SubmitExecution(ctx context.Context, identity auth.Identity, r
 				EscalationReasons:    reasons,
 				FrozenEvidence: &ardav1.FrozenEvidence{
 					OriginalInput:        origInput,
-					AgentReasoning:       res.Reason,
+					AgentReasoning:       agentReasoning,
 					ProposedDecision:     proposed,
 					Confidence:           conf,
 					ReliabilityThreshold: ver.Configuration.ReliabilityThreshold,

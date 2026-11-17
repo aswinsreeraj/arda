@@ -3,8 +3,10 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -125,18 +127,21 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 
 	// Initialize Agent Registry gRPC connection
 	var regClient *proxy.RegistryClient
+	var regServiceInstance *service.RegistryService
 	var inProcessGRPC *registrygrpc.Server
+	if db != nil {
+		regStore := store.NewPostgresStore(db)
+		regServiceInstance = service.NewRegistryService(regStore)
+	}
 	if cfg.RegistryGRPCAddr != "" {
 		rc, err := proxy.NewRegistryClient(cfg.RegistryGRPCAddr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to registry grpc service: %w", err)
 		}
 		regClient = rc
-	} else if db != nil {
+	} else if regServiceInstance != nil {
 		// Spawn in-process gRPC server over bufconn so Gateway talks to Registry exclusively via gRPC
-		regStore := store.NewPostgresStore(db)
-		regService := service.NewRegistryService(regStore)
-		inProcessGRPC = registrygrpc.NewServer(regService)
+		inProcessGRPC = registrygrpc.NewServer(regServiceInstance)
 		lis := bufconn.Listen(1024 * 1024)
 		go func() {
 			_ = inProcessGRPC.Serve(lis)
@@ -309,9 +314,45 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 			if err == nil {
 				configProvider, _ := agentruntime.NewRegistryConfigProvider(regClient.Client())
 
-				mcpManager := mcp.NewConnectionManager(mcp.ManagerConfig{AllowLocalhost: true})
+				var mcpCredResolver mcp.CredentialResolver
+				if secretStore != nil {
+					mcpCredResolver, _ = mcp.NewVaultCredentialResolver(secretStore)
+				}
+				mcpManager := mcp.NewConnectionManager(mcp.ManagerConfig{
+					AllowLocalhost:     true,
+					CredentialResolver: mcpCredResolver,
+				})
 				sim := simulator.NewTransactionSimulator(uuid.Nil)
 				_ = mcpManager.RegisterInProcessServer("mcp-tx-conn", uuid.Nil, sim.Server())
+
+				// Register Obsidian MCP connection for realtime execution (mirrors worker setup)
+				obsidianEndpoint := os.Getenv("OBSIDIAN_MCP_ENDPOINT")
+				if obsidianEndpoint == "" {
+					obsidianEndpoint = "https://127.0.0.1:27124/mcp"
+				}
+				obsidianConn := mcp.ConnectionDefinition{
+					ID:            "obsidian-mcp",
+					TenantID:      uuid.Nil,
+					ServerName:    "obsidian-mcp",
+					Endpoint:      obsidianEndpoint,
+					Transport:     mcp.TransportStreamableHTTP,
+					CredentialRef: "secret:credentials/mcp/obsidian-mcp#access_token",
+				}
+				if conn, err := mcpManager.RegisterConnection(context.Background(), obsidianConn); err != nil {
+					log.Printf("WARN: Failed to register global obsidian-mcp connection in gateway: %v", err)
+				} else {
+					log.Printf("Gateway registered global MCP connection: %s (%s)", conn.ID, conn.Endpoint)
+				}
+				if db != nil {
+					var tenantIDs []uuid.UUID
+					if err := db.Table("tenants").Pluck("id", &tenantIDs).Error; err == nil {
+						for _, tid := range tenantIDs {
+							tConn := obsidianConn
+							tConn.TenantID = tid
+							_, _ = mcpManager.RegisterConnection(context.Background(), tConn)
+						}
+					}
+				}
 
 				handlers := toolgateway.NewHandlerRegistry()
 				handlers.Register("mcp:mcp-tx-conn:get_transaction", mcp.NewToolHandler(mcpManager, "mcp-tx-conn", "get_transaction"))
@@ -368,6 +409,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
 		RegistryClient:     grpcClient,
+		RegistryService:    regServiceInstance,
 		ReliabilityService: relSvc,
 		ExecutionClient:    execClient,
 		TemporalClient:     tempClient,

@@ -68,6 +68,53 @@ func (h *Handler) GetAgentHandler(c *gin.Context) {
 	writeJSON(c, http.StatusOK, detail)
 }
 
+// DeleteAgentHandler handles DELETE /api/v1/agents/:id
+func (h *Handler) DeleteAgentHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
+	if !ok {
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
+		return
+	}
+
+	idStr := c.Param("id")
+	agentID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		return
+	}
+
+	if err := h.svc.DeleteAgent(c.Request.Context(), tenantID, agentID); err != nil {
+		writeErrorResponse(c, err)
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// ListVersionsHandler handles GET /api/v1/agents/:id/versions
+func (h *Handler) ListVersionsHandler(c *gin.Context) {
+	tenantID, ok := TenantIDFromContext(c.Request.Context())
+	if !ok {
+		writeErrorResponse(c, domain.NewUnauthenticatedError("missing tenant context"))
+		return
+	}
+
+	idStr := c.Param("id")
+	agentID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeErrorResponse(c, domain.NewValidationError("invalid agent id: must be a valid uuid"))
+		return
+	}
+
+	versions, err := h.svc.ListVersions(c.Request.Context(), tenantID, agentID)
+	if err != nil {
+		writeErrorResponse(c, err)
+		return
+	}
+
+	writeJSON(c, http.StatusOK, map[string]any{"versions": versions})
+}
+
 // CreateVersionHandler handles POST /api/v1/agents/:id/versions
 func (h *Handler) CreateVersionHandler(c *gin.Context) {
 	tenantID, ok := TenantIDFromContext(c.Request.Context())

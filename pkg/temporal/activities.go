@@ -256,6 +256,15 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 		outCtx := metadata.NewOutgoingContext(ctx, md)
 
 		relThreshold := 0.85
+		if t, ok := res.Output["reliability_threshold"].(float64); ok && t > 0 {
+			relThreshold = t
+		}
+		agentReasoning := ""
+		if r, ok := res.Output["agent_reasoning"].(string); ok && strings.TrimSpace(r) != "" {
+			agentReasoning = strings.TrimSpace(r)
+		} else if c, ok := res.Output["content"].(string); ok && strings.TrimSpace(c) != "" {
+			agentReasoning = agentruntime.ExtractAgentReasoning(c)
+		}
 		createReq := &ardav1.CreateReviewCaseRequest{
 			TenantId:             input.TenantID.String(),
 			ExecutionId:          input.ExecutionID,
@@ -269,7 +278,7 @@ func (a *AgentActivities) AgentExecutionActivity(ctx context.Context, input Agen
 			EscalationReasons:    reasons,
 			FrozenEvidence: &ardav1.FrozenEvidence{
 				OriginalInput:        origInput,
-				AgentReasoning:       res.Reason,
+				AgentReasoning:       agentReasoning,
 				ProposedDecision:     proposed,
 				Confidence:           conf,
 				ReliabilityThreshold: relThreshold,

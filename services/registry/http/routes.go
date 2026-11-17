@@ -26,8 +26,10 @@ func RegisterRoutes(h *Handler, resolver TenantResolver) *gin.Engine {
 	// Agent lifecycle routes
 	api.POST("/v1/agents", h.CreateAgentHandler)
 	api.GET("/v1/agents/:id", h.GetAgentHandler)
+	api.DELETE("/v1/agents/:id", h.DeleteAgentHandler)
 
 	// Version lifecycle routes
+	api.GET("/v1/agents/:id/versions", h.ListVersionsHandler)
 	api.POST("/v1/agents/:id/versions", h.CreateVersionHandler)
 	api.POST("/v1/agents/:id/versions/:versionId/publish", h.PublishVersionHandler)
 	api.GET("/v1/agents/:id/versions/latest", h.GetLatestPublishedVersionHandler)

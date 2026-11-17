@@ -33,6 +33,9 @@ type Store interface {
 	// GetLatestDraftVersion retrieves the latest draft version of an agent, or nil if none.
 	GetLatestDraftVersion(ctx context.Context, agentID uuid.UUID) (*domain.AgentVersion, error)
 
+	// ListVersions retrieves all versions for an agent ordered by version_number descending.
+	ListVersions(ctx context.Context, agentID uuid.UUID) ([]domain.AgentVersion, error)
+
 	// GetNextVersionNumber returns the next incremental version number for an agent.
 	GetNextVersionNumber(ctx context.Context, agentID uuid.UUID) (int, error)
 
@@ -44,4 +47,7 @@ type Store interface {
 
 	// DeleteVersion deletes an existing draft version. Rejects deletion if version is published.
 	DeleteVersion(ctx context.Context, agentID, versionID uuid.UUID) error
+
+	// DeleteAgent deletes an agent and all of its versions within a single transaction.
+	DeleteAgent(ctx context.Context, tenantID, agentID uuid.UUID) error
 }

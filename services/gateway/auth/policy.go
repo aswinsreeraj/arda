@@ -9,6 +9,7 @@ const (
 	ActionAgentCreate        Action = "agent:create"
 	ActionAgentRead          Action = "agent:read"
 	ActionAgentExecute       Action = "agent:execute"
+	ActionAgentDelete        Action = "agent:delete"
 	ActionVersionCreate      Action = "version:create"
 	ActionVersionUpdate      Action = "version:update"
 	ActionVersionPublish     Action = "version:publish"
@@ -38,6 +39,7 @@ var Policy = map[Role]map[Action]bool{
 		ActionAgentCreate:        false,
 		ActionAgentRead:          false,
 		ActionAgentExecute:       false,
+		ActionAgentDelete:        false,
 		ActionVersionCreate:      false,
 		ActionVersionUpdate:      false,
 		ActionVersionPublish:     false,
@@ -64,6 +66,7 @@ var Policy = map[Role]map[Action]bool{
 		ActionAgentCreate:        true,
 		ActionAgentRead:          true,
 		ActionAgentExecute:       true,
+		ActionAgentDelete:        true,
 		ActionVersionCreate:      true,
 		ActionVersionUpdate:      true,
 		ActionVersionPublish:     true,
@@ -90,6 +93,7 @@ var Policy = map[Role]map[Action]bool{
 		ActionAgentCreate:        true,
 		ActionAgentRead:          true,
 		ActionAgentExecute:       true,
+		ActionAgentDelete:        false,
 		ActionVersionCreate:      true,
 		ActionVersionUpdate:      true,
 		ActionVersionPublish:     false, // Requires reviewer or admin approval
@@ -116,6 +120,7 @@ var Policy = map[Role]map[Action]bool{
 		ActionAgentCreate:        false,
 		ActionAgentRead:          true,
 		ActionAgentExecute:       false,
+		ActionAgentDelete:        false,
 		ActionVersionCreate:      false,
 		ActionVersionUpdate:      false,
 		ActionVersionPublish:     true, // Read + resolve

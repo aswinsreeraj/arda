@@ -243,6 +243,33 @@ func (s *RegistryService) GetLatestPublishedVersion(ctx context.Context, tenantI
 	return s.store.GetLatestPublishedVersion(ctx, agentID)
 }
 
+// DeleteAgent permanently removes an agent and all of its versions for the tenant.
+func (s *RegistryService) DeleteAgent(ctx context.Context, tenantID, agentID uuid.UUID) error {
+	if tenantID == uuid.Nil {
+		return domain.NewUnauthenticatedError("missing or invalid tenant identity")
+	}
+	if agentID == uuid.Nil {
+		return domain.NewValidationError("invalid agent id")
+	}
+	return s.store.DeleteAgent(ctx, tenantID, agentID)
+}
+
+// ListVersions retrieves all versions of an agent ordered by version_number descending, verifying tenant ownership.
+func (s *RegistryService) ListVersions(ctx context.Context, tenantID, agentID uuid.UUID) ([]domain.AgentVersion, error) {
+	if tenantID == uuid.Nil {
+		return nil, domain.NewUnauthenticatedError("missing or invalid tenant identity")
+	}
+	if agentID == uuid.Nil {
+		return nil, domain.NewValidationError("invalid agent id")
+	}
+
+	if _, err := s.store.GetAgent(ctx, tenantID, agentID); err != nil {
+		return nil, err
+	}
+
+	return s.store.ListVersions(ctx, agentID)
+}
+
 // GetVersion retrieves a specific agent version by ID, verifying tenant ownership of the agent.
 func (s *RegistryService) GetVersion(ctx context.Context, tenantID, agentID, versionID uuid.UUID) (*domain.AgentVersion, error) {
 	if tenantID == uuid.Nil {

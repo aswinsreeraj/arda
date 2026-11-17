@@ -186,17 +186,20 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 		compiledSchema = cs
 	}
 
+	skipReliability := shouldSkipReliabilityCheck(cfg, input.Payload)
+	cleanPayload := stripInternalPayloadFlags(input.Payload)
+
 	// Render prompt template with input payload
 	builder := e.promptBuilder
 	if builder == nil {
 		builder = NewPromptBuilder()
 	}
-	prompt, err := builder.BuildFromConfig(cfg, input.Payload)
+	prompt, err := builder.BuildFromConfig(cfg, cleanPayload)
 	if err != nil {
 		return ExecutionResult{}, fmt.Errorf("failed to build prompt: %w", err)
 	}
-	if !strings.Contains(cfg.PromptTemplate, "{{") && len(input.Payload) > 0 {
-		if payloadJSON, err := json.Marshal(input.Payload); err == nil && string(payloadJSON) != "{}" {
+	if !strings.Contains(cfg.PromptTemplate, "{{") && len(cleanPayload) > 0 {
+		if payloadJSON, err := json.Marshal(cleanPayload); err == nil && string(payloadJSON) != "{}" {
 			prompt = fmt.Sprintf("%s\n\nInput Payload:\n%s", prompt, string(payloadJSON))
 		}
 	}
@@ -313,8 +316,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 			}
 
 			// Execute tool via Tool Gateway boundary only
+			log.Printf("[ARDA Runtime] invoking tool=%s args=%v", toolName, toolArgs)
 			toolResp, err := e.toolGateway.ExecuteTool(reqCtx, toolReq)
 			if err != nil {
+				log.Printf("[ARDA Runtime] tool=%s execution error: %v", toolName, err)
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return ExecutionResult{}, err
 				}
@@ -327,8 +332,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				if errMsg == "" {
 					errMsg = "tool call was blocked by gateway policy or guardrails"
 				}
+				log.Printf("[ARDA Runtime] tool=%s denied: %s (code=%s)", toolName, errMsg, toolResp.DenialCode)
 				return ExecutionResult{}, NewPermanentError(fmt.Sprintf("tool execution denied: %s (code: %s)", errMsg, toolResp.DenialCode), ErrToolDenied)
 			}
+			log.Printf("[ARDA Runtime] tool=%s succeeded", toolName)
 
 			// Enforce tool result size budget
 			resultOutput := toolResp.Output
@@ -353,6 +360,10 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				target = escalate.Target
 			}
 			proposedDecision := extractAgentDecision(resp.Content)
+			agentReasoning := ExtractAgentReasoning(resp.Content)
+			if agentReasoning == "" && escalate != nil && strings.TrimSpace(escalate.Reason) != "" {
+				agentReasoning = strings.TrimSpace(escalate.Reason)
+			}
 			out := map[string]any{
 				"escalation_reason": reason,
 				"escalation_target": target,
@@ -360,6 +371,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 			}
 			if proposedDecision != "" {
 				out["proposed_decision"] = proposedDecision
+			}
+			if agentReasoning != "" {
+				out["agent_reasoning"] = agentReasoning
+			}
+			if cfg.ReliabilityThreshold > 0 {
+				out["reliability_threshold"] = cfg.ReliabilityThreshold
 			}
 			usage := tracker.TokenUsage()
 			result := ExecutionResult{
@@ -408,9 +425,15 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				parsedJSON = parsed
 			}
 
-			// Check Reliability Service when execution mode is gated or ReliabilityService is provided
+			// Check Reliability Service when execution mode is gated or ReliabilityService is provided,
+			// unless explicitly skipped via agent configuration or per-run request flag.
 			relDecisionStr := ""
-			if cfg.ExecutionMode == domain.ExecutionModeGated || e.reliabilityService != nil {
+			var relConfidence *float64
+			relReasonCode := ""
+			if skipReliability {
+				relDecisionStr = "SKIPPED"
+				log.Printf("[ARDA Runtime] Reliability check skipped (agent_id=%s execution_id=%s)", input.AgentID, executionID)
+			} else if cfg.ExecutionMode == domain.ExecutionModeGated || e.reliabilityService != nil {
 				if e.reliabilityService == nil {
 					return ExecutionResult{}, NewPermanentError("reliability service is required for gated execution mode but not configured", ErrNilReliabilityService)
 				}
@@ -422,7 +445,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					ExecutionID:          executionID,
 					ExecutionMode:        cfg.ExecutionMode,
 					ReliabilityThreshold: cfg.ReliabilityThreshold,
-					CaseDescription:      buildCaseDescription(input.Payload, prompt),
+					CaseDescription:      buildCaseDescription(cleanPayload, prompt),
 					ProposedDecision:     resp.Content,
 					ActionType:           "decision",
 					ActionPayload:        parsedJSON,
@@ -440,6 +463,9 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				}
 
 				relDecisionStr = string(relEval.Decision)
+				confVal := relEval.Confidence
+				relConfidence = &confVal
+				relReasonCode = relEval.ReasonCode
 
 				switch relEval.Decision {
 				case ReliabilityAllow:
@@ -448,14 +474,18 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 						usage := tracker.TokenUsage()
 						reason := fmt.Sprintf("Active learning calibration sample (1-in-%d): autonomous decision routed for human review", e.calibrationInterval)
 						calOut := map[string]any{
-							"escalation_reason":    reason,
-							"confidence":           relEval.Confidence,
-							"reason_code":          "CALIBRATION_SAMPLE",
-							"calibration_sampling": true,
-							"content":              resp.Content,
+							"escalation_reason":     reason,
+							"confidence":            relEval.Confidence,
+							"reliability_threshold": cfg.ReliabilityThreshold,
+							"reason_code":           "CALIBRATION_SAMPLE",
+							"calibration_sampling":  true,
+							"content":               resp.Content,
 						}
 						if proposed := extractAgentDecision(resp.Content); proposed != "" {
 							calOut["proposed_decision"] = proposed
+						}
+						if agentReasoning := ExtractAgentReasoning(resp.Content); agentReasoning != "" {
+							calOut["agent_reasoning"] = agentReasoning
 						}
 						return ExecutionResult{
 							Status:  StatusEscalated,
@@ -484,13 +514,17 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 						reason = fmt.Sprintf("reliability threshold not met (confidence: %.2f < %.2f)", relEval.Confidence, cfg.ReliabilityThreshold)
 					}
 					escOut := map[string]any{
-						"escalation_reason": reason,
-						"confidence":        relEval.Confidence,
-						"reason_code":       relEval.ReasonCode,
-						"content":           resp.Content,
+						"escalation_reason":     reason,
+						"confidence":            relEval.Confidence,
+						"reliability_threshold": cfg.ReliabilityThreshold,
+						"reason_code":           relEval.ReasonCode,
+						"content":               resp.Content,
 					}
 					if proposed := extractAgentDecision(resp.Content); proposed != "" {
 						escOut["proposed_decision"] = proposed
+					}
+					if agentReasoning := ExtractAgentReasoning(resp.Content); agentReasoning != "" {
+						escOut["agent_reasoning"] = agentReasoning
 					}
 					return ExecutionResult{
 						Status:  StatusEscalated,
@@ -533,6 +567,15 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					ReliabilityDecision: relDecisionStr,
 				},
 			}
+			if proposed := extractAgentDecision(resp.Content); proposed != "" {
+				result.Output["proposed_decision"] = proposed
+			}
+			if agentReasoning := ExtractAgentReasoning(resp.Content); agentReasoning != "" {
+				result.Output["agent_reasoning"] = agentReasoning
+			}
+			if cfg.ReliabilityThreshold > 0 {
+				result.Output["reliability_threshold"] = cfg.ReliabilityThreshold
+			}
 			if resp.Model != "" {
 				result.Output["model"] = resp.Model
 			}
@@ -544,6 +587,14 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 			if parsedJSON != nil {
 				result.StructuredOutput = parsedJSON
 				result.Output["structured_output"] = parsedJSON
+			}
+			if skipReliability {
+				result.Output["reliability_skipped"] = true
+			} else if relConfidence != nil {
+				result.Output["confidence"] = *relConfidence
+				if relReasonCode != "" {
+					result.Output["reliability_reason_code"] = relReasonCode
+				}
 			}
 
 			if err := result.Validate(); err != nil {
@@ -898,6 +949,28 @@ func parseModelAction(content string) (actionType string, toolCall *toolCallActi
 		}
 	}
 
+	// Recognize standard bare tool call objects: {"name": "<tool>", "arguments": {...}}
+	bareToolName, _ := m["tool_name"].(string)
+	if bareToolName == "" {
+		bareToolName, _ = m["tool"].(string)
+	}
+	if bareToolName == "" {
+		bareToolName, _ = m["name"].(string)
+	}
+	if strings.TrimSpace(bareToolName) != "" {
+		var bareArgs map[string]any
+		if a, ok := m["arguments"].(map[string]any); ok {
+			bareArgs = a
+		} else if a, ok := m["args"].(map[string]any); ok {
+			bareArgs = a
+		} else if a, ok := m["parameters"].(map[string]any); ok {
+			bareArgs = a
+		}
+		if bareArgs != nil {
+			return "tool_call", &toolCallAction{Name: strings.TrimSpace(bareToolName), Arguments: bareArgs}, nil, nil, nil
+		}
+	}
+
 	if strings.EqualFold(actionStr, "escalate") || strings.EqualFold(typeStr, "escalate") {
 		reason, _ := m["reason"].(string)
 		target, _ := m["target"].(string)
@@ -996,8 +1069,12 @@ func extractAgentDecision(raw string) string {
 
 	if strings.HasPrefix(trimmed, "{") {
 		var m map[string]any
-		if err := json.Unmarshal([]byte(trimmed), &m); err == nil {
-			for _, key := range []string{"decision", "proposed_decision", "verdict", "outcome"} {
+		if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
+			cleaned := cleanJSONStringLiterals(trimmed)
+			_ = json.Unmarshal([]byte(cleaned), &m)
+		}
+		if m != nil {
+			for _, key := range []string{"decision", "proposed_decision", "verdict", "outcome", "status"} {
 				if val, ok := m[key].(string); ok {
 					switch strings.ToUpper(strings.TrimSpace(val)) {
 					case "APPROVE", "APPROVED", "ALLOW":
@@ -1020,4 +1097,82 @@ func extractAgentDecision(raw string) string {
 	default:
 		return ""
 	}
+}
+
+// ExtractAgentReasoning extracts the LLM's own case-based rationale from its raw output.
+// It never returns system-generated reliability messages and returns "" if the model output
+// contained only a bare decision keyword with no explanation.
+func ExtractAgentReasoning(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 && strings.HasPrefix(lines[0], "```") {
+			trimmed = strings.Join(lines[1:], "\n")
+		}
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+		trimmed = strings.TrimSpace(trimmed)
+	}
+
+	if strings.HasPrefix(trimmed, "{") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
+			cleaned := cleanJSONStringLiterals(trimmed)
+			_ = json.Unmarshal([]byte(cleaned), &m)
+		}
+		if m != nil {
+			for _, key := range []string{"reason", "rationale", "explanation", "justification", "reasoning", "summary", "message"} {
+				if val, ok := m[key].(string); ok && strings.TrimSpace(val) != "" {
+					return strings.TrimSpace(val)
+				}
+			}
+			// JSON object had no rationale field — do not dump raw JSON as prose reasoning.
+			return ""
+		}
+	}
+
+	switch strings.ToUpper(trimmed) {
+	case "APPROVE", "APPROVED", "ALLOW", "REJECT", "REJECTED", "DENY", "DENIED", "BLOCK", "ESCALATE", "ESCALATED":
+		return ""
+	default:
+		return trimmed
+	}
+}
+
+func shouldSkipReliabilityCheck(cfg domain.Configuration, payload map[string]any) bool {
+	if cfg.Guardrails != nil {
+		if skip, ok := cfg.Guardrails["skip_reliability_check"].(bool); ok && skip {
+			return true
+		}
+	}
+	if payload != nil {
+		if skip, ok := payload["__skip_reliability_check"].(bool); ok && skip {
+			return true
+		}
+		if skip, ok := payload["skip_reliability_check"].(bool); ok && skip {
+			return true
+		}
+	}
+	return false
+}
+
+func stripInternalPayloadFlags(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	if _, hasInternal := payload["__skip_reliability_check"]; !hasInternal {
+		return payload
+	}
+	clean := make(map[string]any, len(payload))
+	for k, v := range payload {
+		if k == "__skip_reliability_check" {
+			continue
+		}
+		clean[k] = v
+	}
+	return clean
 }

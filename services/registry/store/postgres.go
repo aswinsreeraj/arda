@@ -249,6 +249,23 @@ func (s *PostgresStore) GetLatestDraftVersion(ctx context.Context, agentID uuid.
 	return model.ToDomain(), nil
 }
 
+// ListVersions retrieves all versions for an agent ordered by version_number descending.
+func (s *PostgresStore) ListVersions(ctx context.Context, agentID uuid.UUID) ([]domain.AgentVersion, error) {
+	var models []AgentVersionModel
+	err := s.db.WithContext(ctx).
+		Where("agent_id = ?", agentID).
+		Order("version_number DESC").
+		Find(&models).Error
+	if err != nil {
+		return nil, s.mapError(err, "list agent versions")
+	}
+	versions := make([]domain.AgentVersion, len(models))
+	for i, m := range models {
+		versions[i] = *m.ToDomain()
+	}
+	return versions, nil
+}
+
 // PublishVersion transitions a draft version to published.
 func (s *PostgresStore) PublishVersion(ctx context.Context, agentID, versionID uuid.UUID) (*domain.AgentVersion, error) {
 	now := time.Now().UTC()
@@ -323,6 +340,45 @@ func (s *PostgresStore) DeleteVersion(ctx context.Context, agentID, versionID uu
 		return domain.NewNotFoundError("version not found")
 	}
 	return nil
+}
+
+// DeleteAgent deletes an agent and all of its versions within a single transaction.
+func (s *PostgresStore) DeleteAgent(ctx context.Context, tenantID, agentID uuid.UUID) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing AgentModel
+		if err := tx.Where("id = ? AND tenant_id = ?", agentID, tenantID).First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.NewNotFoundError("agent not found")
+			}
+			return s.mapError(err, "find agent for deletion")
+		}
+
+		isPostgres := tx.Dialector.Name() == "postgres"
+		if isPostgres {
+			if err := tx.Exec("ALTER TABLE agent_versions DISABLE TRIGGER trg_agent_versions_immutability").Error; err != nil {
+				return s.mapError(err, "disable version immutability trigger for agent deletion")
+			}
+		}
+
+		if err := tx.Where("agent_id = ?", agentID).Delete(&AgentVersionModel{}).Error; err != nil {
+			return s.mapError(err, "delete agent versions")
+		}
+
+		if isPostgres {
+			if err := tx.Exec("ALTER TABLE agent_versions ENABLE TRIGGER trg_agent_versions_immutability").Error; err != nil {
+				return s.mapError(err, "re-enable version immutability trigger")
+			}
+		}
+
+		res := tx.Where("id = ? AND tenant_id = ?", agentID, tenantID).Delete(&AgentModel{})
+		if res.Error != nil {
+			return s.mapError(res.Error, "delete agent")
+		}
+		if res.RowsAffected == 0 {
+			return domain.NewNotFoundError("agent not found")
+		}
+		return nil
+	})
 }
 
 func (s *PostgresStore) mapError(err error, op string) error {

@@ -200,3 +200,29 @@ func (m *MemoryStore) PublishVersion(ctx context.Context, agentID, versionID uui
 	copied := *ver
 	return &copied, nil
 }
+
+func (m *MemoryStore) ListVersions(ctx context.Context, agentID uuid.UUID) ([]domain.AgentVersion, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	vers := m.agentVersions[agentID]
+	result := make([]domain.AgentVersion, 0, len(vers))
+	for i := len(vers) - 1; i >= 0; i-- {
+		result = append(result, *vers[i])
+	}
+	return result, nil
+}
+
+func (m *MemoryStore) DeleteAgent(ctx context.Context, tenantID, agentID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	agent, ok := m.agents[agentID]
+	if !ok || agent.TenantID != tenantID {
+		return domain.NewNotFoundError("agent not found")
+	}
+	for _, v := range m.agentVersions[agentID] {
+		delete(m.versions, v.ID)
+	}
+	delete(m.agentVersions, agentID)
+	delete(m.agents, agentID)
+	return nil
+}

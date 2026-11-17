@@ -158,6 +158,64 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
 			func(c *gin.Context) { handleGetAgentGRPC(c, cfg.RegistryClient) },
 		)
+		api.DELETE("/v1/agents/:id",
+			auth.RequireActionMiddleware(auth.ActionAgentDelete, WriteErrorResponse),
+			func(c *gin.Context) {
+				identity, ok := auth.IdentityFromContext(c.Request.Context())
+				if !ok || identity.TenantID == uuid.Nil {
+					WriteErrorResponse(c.Writer, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+					return
+				}
+				agentID, err := uuid.Parse(c.Param("id"))
+				if err != nil {
+					WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid agent id")
+					return
+				}
+				deleter, ok := cfg.RegistryService.(interface {
+					DeleteAgent(ctx context.Context, tenantID, agentID uuid.UUID) error
+				})
+				if !ok || deleter == nil {
+					WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "agent deletion unavailable")
+					return
+				}
+				if err := deleter.DeleteAgent(c.Request.Context(), identity.TenantID, agentID); err != nil {
+					WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error())
+					return
+				}
+				c.Status(http.StatusNoContent)
+			},
+		)
+		api.GET("/v1/agents/:id/versions",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			func(c *gin.Context) {
+				identity, ok := auth.IdentityFromContext(c.Request.Context())
+				if !ok || identity.TenantID == uuid.Nil {
+					WriteErrorResponse(c.Writer, http.StatusUnauthorized, "UNAUTHENTICATED", "authentication required")
+					return
+				}
+				agentID, err := uuid.Parse(c.Param("id"))
+				if err != nil {
+					WriteErrorResponse(c.Writer, http.StatusBadRequest, "VALIDATION_FAILED", "invalid agent id")
+					return
+				}
+				lister, ok := cfg.RegistryService.(interface {
+					ListVersions(ctx context.Context, tenantID, agentID uuid.UUID) ([]domain.AgentVersion, error)
+				})
+				if !ok || lister == nil {
+					WriteErrorResponse(c.Writer, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "version history listing unavailable")
+					return
+				}
+				versions, err := lister.ListVersions(c.Request.Context(), identity.TenantID, agentID)
+				if err != nil {
+					WriteErrorResponse(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error())
+					return
+				}
+				if versions == nil {
+					versions = []domain.AgentVersion{}
+				}
+				c.JSON(http.StatusOK, map[string]any{"versions": versions})
+			},
+		)
 		api.POST("/v1/agents/:id/versions",
 			auth.RequireActionMiddleware(auth.ActionVersionCreate, WriteErrorResponse),
 			func(c *gin.Context) { handleCreateVersionGRPC(c, cfg.RegistryClient) },
@@ -210,6 +268,8 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 		wrapRoute("POST", "/v1/agents", auth.ActionAgentCreate)
 		wrapRoute("GET", "/v1/agents", auth.ActionAgentRead)
 		wrapRoute("GET", "/v1/agents/:id", auth.ActionAgentRead)
+		wrapRoute("DELETE", "/v1/agents/:id", auth.ActionAgentDelete)
+		wrapRoute("GET", "/v1/agents/:id/versions", auth.ActionAgentRead)
 		wrapRoute("POST", "/v1/agents/:id/versions", auth.ActionVersionCreate)
 		wrapRoute("POST", "/v1/agents/:id/versions/:versionId/publish", auth.ActionVersionPublish)
 		wrapRoute("GET", "/v1/agents/:id/versions/latest", auth.ActionAgentRead)
@@ -493,13 +553,14 @@ func handleReliabilityGate(c *gin.Context, relSvc proxy.ReliabilityService) {
 }
 
 type executeRequestBody struct {
-	AgentVersionID *uuid.UUID           `json:"agent_version_id,omitempty"`
-	VersionID      *uuid.UUID           `json:"version_id,omitempty"`
-	Input          map[string]any       `json:"input,omitempty"`
-	InputPayload   map[string]any       `json:"input_payload,omitempty"`
-	ExecutionMode  domain.ExecutionMode `json:"execution_mode,omitempty"`
-	Mode           string               `json:"mode,omitempty"`
-	ExecutionID    string               `json:"execution_id,omitempty"`
+	AgentVersionID       *uuid.UUID           `json:"agent_version_id,omitempty"`
+	VersionID            *uuid.UUID           `json:"version_id,omitempty"`
+	Input                map[string]any       `json:"input,omitempty"`
+	InputPayload         map[string]any       `json:"input_payload,omitempty"`
+	ExecutionMode        domain.ExecutionMode `json:"execution_mode,omitempty"`
+	Mode                 string               `json:"mode,omitempty"`
+	ExecutionID          string               `json:"execution_id,omitempty"`
+	SkipReliabilityCheck bool                 `json:"skip_reliability_check,omitempty"`
 }
 
 // ExecuteAgentResponse represents the response payload returned by agent execution dispatch.
@@ -545,6 +606,12 @@ func handleExecuteAgent(c *gin.Context, execClient proxy.ExecutionClient, regCli
 		if nested, ok := body.Input["input"].(map[string]any); ok {
 			body.Input = nested
 		}
+	}
+	if body.SkipReliabilityCheck {
+		if body.Input == nil {
+			body.Input = make(map[string]any)
+		}
+		body.Input["__skip_reliability_check"] = true
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(body.Mode))

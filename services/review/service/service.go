@@ -230,17 +230,33 @@ func (s *Service) ResolveCase(ctx context.Context, req domain.ResolveCaseRequest
 	auditRecordID := fmt.Sprintf("aud_%s", uuid.New().String()[:8])
 	eventID := fmt.Sprintf("evt-res-%s", uuid.New().String()[:12])
 
-	// Original case description for feedback indexing
-	desc := existing.FrozenEvidence.AgentReasoning
-	if desc == "" && existing.FrozenEvidence.OriginalInput != nil {
-		if promptVal, ok := existing.FrozenEvidence.OriginalInput["prompt"].(string); ok && promptVal != "" {
-			desc = promptVal
-		} else if inputVal, ok := existing.FrozenEvidence.OriginalInput["input"].(string); ok && inputVal != "" {
-			desc = inputVal
+	// Original case description for feedback indexing:
+	// Prefer FrozenEvidence.OriginalInput so the stored precedent embedding matches
+	// the exact CaseDescription sent by LLMExecutor during Gate() evaluation.
+	var desc string
+	if len(existing.FrozenEvidence.OriginalInput) > 0 {
+		if raw, ok := existing.FrozenEvidence.OriginalInput["case_description"].(string); ok && strings.TrimSpace(raw) != "" {
+			desc = strings.TrimSpace(raw)
 		} else {
-			b, _ := json.Marshal(existing.FrozenEvidence.OriginalInput)
-			desc = string(b)
+			cleaned := make(map[string]any, len(existing.FrozenEvidence.OriginalInput))
+			for k, v := range existing.FrozenEvidence.OriginalInput {
+				if k == "__skip_reliability_check" {
+					continue
+				}
+				cleaned[k] = v
+			}
+			if len(cleaned) > 0 {
+				if b, err := json.Marshal(cleaned); err == nil {
+					serialized := strings.TrimSpace(string(b))
+					if serialized != "" && serialized != "{}" && serialized != "null" {
+						desc = serialized
+					}
+				}
+			}
 		}
+	}
+	if desc == "" {
+		desc = strings.TrimSpace(existing.FrozenEvidence.AgentReasoning)
 	}
 	if desc == "" {
 		desc = fmt.Sprintf("Case %s adjudicated by %s", existing.ID, req.ReviewerID)

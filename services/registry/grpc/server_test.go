@@ -106,6 +106,15 @@ func (m *memoryStore) GetLatestDraftVersion(ctx context.Context, agentID uuid.UU
 	return nil, nil
 }
 
+func (m *memoryStore) ListVersions(ctx context.Context, agentID uuid.UUID) ([]domain.AgentVersion, error) {
+	vers := m.agentVersions[agentID]
+	res := make([]domain.AgentVersion, 0, len(vers))
+	for i := len(vers) - 1; i >= 0; i-- {
+		res = append(res, *vers[i])
+	}
+	return res, nil
+}
+
 func (m *memoryStore) GetNextVersionNumber(ctx context.Context, agentID uuid.UUID) (int, error) {
 	return len(m.agentVersions[agentID]) + 1, nil
 }
@@ -143,6 +152,19 @@ func (m *memoryStore) DeleteVersion(ctx context.Context, agentID, versionID uuid
 		return domain.NewConflictError(domain.CodePublishedImmutable, "published version is immutable")
 	}
 	delete(m.versions, versionID)
+	return nil
+}
+
+func (m *memoryStore) DeleteAgent(ctx context.Context, tenantID, agentID uuid.UUID) error {
+	agent, ok := m.agents[agentID]
+	if !ok || agent.TenantID != tenantID {
+		return domain.NewNotFoundError("agent not found")
+	}
+	for _, v := range m.agentVersions[agentID] {
+		delete(m.versions, v.ID)
+	}
+	delete(m.agentVersions, agentID)
+	delete(m.agents, agentID)
 	return nil
 }
 
