@@ -16,6 +16,7 @@ type OutboxRelay struct {
 	producer     EventProducer
 	batchSize    int
 	pollInterval time.Duration
+	onPublished  func(topic string, payload []byte)
 }
 
 // NewOutboxRelay creates a new transactional outbox relay.
@@ -53,6 +54,14 @@ func WithPollInterval(interval time.Duration) RelayOption {
 	}
 }
 
+// WithOnPublished registers an optional callback invoked after an outbox event
+// is successfully published and marked published (e.g., for local WebSocket fanout).
+func WithOnPublished(fn func(topic string, payload []byte)) RelayOption {
+	return func(r *OutboxRelay) {
+		r.onPublished = fn
+	}
+}
+
 // Flush fetches and publishes pending outbox events synchronously.
 func (r *OutboxRelay) Flush(ctx context.Context) (int, error) {
 	if r.store == nil || r.producer == nil {
@@ -81,6 +90,9 @@ func (r *OutboxRelay) Flush(ctx context.Context) (int, error) {
 		if err := r.store.MarkOutboxEventPublished(ctx, ev.ID); err != nil {
 			log.Printf("ERROR: failed to mark outbox event %s published: %v", ev.ID, err)
 			continue
+		}
+		if r.onPublished != nil {
+			r.onPublished(ev.Topic, payloadBytes)
 		}
 		publishedCount++
 	}

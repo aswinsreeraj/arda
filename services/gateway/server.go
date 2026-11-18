@@ -27,6 +27,7 @@ import (
 	"github.com/aswinsreeraj/arda/services/gateway/identity"
 	"github.com/aswinsreeraj/arda/services/gateway/proxy"
 	"github.com/aswinsreeraj/arda/services/gateway/ratelimit"
+	gatewayws "github.com/aswinsreeraj/arda/services/gateway/ws"
 	registrygrpc "github.com/aswinsreeraj/arda/services/registry/grpc"
 	"github.com/aswinsreeraj/arda/services/registry/service"
 	"github.com/aswinsreeraj/arda/services/registry/store"
@@ -77,6 +78,8 @@ type Server struct {
 	inProcessReviewGRPC *reviewgrpc.Server
 	OutboxRelay         *reviewevents.OutboxRelay
 	outboxCancel        context.CancelFunc
+	WSHub               *gatewayws.Hub
+	wsConsumerCancel    context.CancelFunc
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
@@ -158,10 +161,17 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		regClient = proxy.NewRegistryClientFromConn(conn)
 	}
 
+	// Initialize tenant-scoped WebSocket Hub for live Human Review notifications
+	wsHub := gatewayws.NewHub()
+
 	// Initialize Human Review gRPC connection
 	var revClient *proxy.ReviewClient
 	var inProcessReviewGRPC *reviewgrpc.Server
 	var outboxRelay *reviewevents.OutboxRelay
+	brokerAddr := cfg.RedpandaBrokers
+	if brokerAddr == "" {
+		brokerAddr = "127.0.0.1:19092"
+	}
 	if cfg.ReviewGRPCAddr != "" {
 		rc, err := proxy.NewReviewClient(cfg.ReviewGRPCAddr)
 		if err != nil {
@@ -171,16 +181,16 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	} else if db != nil {
 		revStore := reviewstore.NewPostgresStore(db)
 		var producer reviewevents.EventProducer
-		brokerAddr := cfg.RedpandaBrokers
-		if brokerAddr == "" {
-			brokerAddr = "127.0.0.1:19092"
-		}
 		if kp, err := reviewevents.NewKafkaProducer(brokerAddr); err == nil {
 			producer = kp
 		} else {
 			producer = reviewevents.NewMockProducer()
 		}
-		outboxRelay = reviewevents.NewOutboxRelay(revStore, producer)
+		outboxRelay = reviewevents.NewOutboxRelay(
+			revStore,
+			producer,
+			reviewevents.WithOnPublished(wsHub.BroadcastRawEvent),
+		)
 		var signaler reviewservice.TemporalSignaler
 		if tempClient != nil {
 			signaler = tempClient.RawClient()
@@ -405,6 +415,12 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		}
 	}
 
+	wsHandler := gatewayws.NewHandler(gatewayws.HandlerConfig{
+		Hub:           wsHub,
+		JWTValidator:  jwtValidator,
+		TenantChecker: identSvc,
+	})
+
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
 		JWTValidator:       jwtValidator,
 		RateLimiter:        limiter,
@@ -419,6 +435,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		ToolsHandler:       toolsHandler,
 		AgentRuntime:       agentRuntimeInstance,
 		ReviewClient:       grpcReviewClient,
+		ReviewWSHandler:    wsHandler,
 	})
 
 	var outboxCancel context.CancelFunc
@@ -426,6 +443,14 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		relayCtx, cancel := context.WithCancel(context.Background())
 		outboxCancel = cancel
 		go outboxRelay.Start(relayCtx)
+	}
+
+	var wsConsumerCancel context.CancelFunc
+	if brokerAddr != "" && db != nil {
+		wsCtx, cancel := context.WithCancel(context.Background())
+		wsConsumerCancel = cancel
+		wsConsumer := gatewayws.NewRedpandaConsumer(brokerAddr, wsHub)
+		go wsConsumer.Start(wsCtx)
 	}
 
 	return &Server{
@@ -443,11 +468,19 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		inProcessReviewGRPC: inProcessReviewGRPC,
 		OutboxRelay:         outboxRelay,
 		outboxCancel:        outboxCancel,
+		WSHub:               wsHub,
+		wsConsumerCancel:    wsConsumerCancel,
 	}, nil
 }
 
 // Close closes all client connections and cleans up background resources.
 func (s *Server) Close() error {
+	if s.wsConsumerCancel != nil {
+		s.wsConsumerCancel()
+	}
+	if s.WSHub != nil {
+		s.WSHub.Close()
+	}
 	if s.outboxCancel != nil {
 		s.outboxCancel()
 	}

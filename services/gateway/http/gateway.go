@@ -50,6 +50,7 @@ type GatewayConfig struct {
 	ToolsHandler       *ToolsHandler
 	AgentRuntime       agentruntime.AgentRuntime
 	ReviewClient       ardav1.ReviewServiceClient
+	ReviewWSHandler    http.Handler
 }
 
 // NewGateway creates and configures the API Gateway root http.Handler.
@@ -105,6 +106,14 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 	router.GET("/healthz", func(c *gin.Context) {
 		WriteJSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// Tenant-scoped WebSocket notifications for the Human Review Queue.
+	// Authenticated via Bearer header or first-message JWT handshake (never URL query params).
+	if cfg.ReviewWSHandler != nil {
+		wsGroup := router.Group("/ws")
+		wsGroup.Use(ratelimit.Middleware(cfg.RateLimiter, WriteErrorResponse))
+		wsGroup.GET("/reviews", gin.WrapH(cfg.ReviewWSHandler))
+	}
 
 	// Public authentication endpoints (rate-limited, unauthenticated)
 	if cfg.IdentityHandler != nil {
