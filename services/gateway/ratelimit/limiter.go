@@ -51,6 +51,23 @@ func NewLimiter(cfg Config) *Limiter {
 	return l
 }
 
+// UpdateRate dynamically updates the rate limit RPS and burst capacity for both
+// new and existing client buckets without restarting the Gateway.
+func (l *Limiter) UpdateRate(rps float64, burst int) {
+	if l == nil || rps <= 0 || burst <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.config.RPS = rps
+	l.config.Burst = burst
+	limit := rate.Limit(rps)
+	for _, entry := range l.clients {
+		entry.limiter.SetLimit(limit)
+		entry.limiter.SetBurst(burst)
+	}
+}
+
 // Allow reports whether an event with the given key is allowed to happen.
 func (l *Limiter) Allow(key string) bool {
 	if !l.config.Enabled {

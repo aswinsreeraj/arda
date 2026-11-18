@@ -18,6 +18,7 @@ import (
 	"github.com/aswinsreeraj/arda/pkg/mailer"
 	"github.com/aswinsreeraj/arda/pkg/mcp"
 	"github.com/aswinsreeraj/arda/pkg/mcp/simulator"
+	"github.com/aswinsreeraj/arda/pkg/platformconfig"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	"github.com/aswinsreeraj/arda/pkg/vault"
@@ -80,6 +81,7 @@ type Server struct {
 	outboxCancel        context.CancelFunc
 	WSHub               *gatewayws.Hub
 	wsConsumerCancel    context.CancelFunc
+	PlatformConfigStore platformconfig.Store
 }
 
 // NewServer builds and validates the API Gateway. It fails closed if auth configuration is missing.
@@ -103,6 +105,23 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 	}
 	rateCfg.Enabled = cfg.RateLimitEnabled
 	limiter := ratelimit.NewLimiter(rateCfg)
+
+	// Initialize persisted platform configuration store and apply saved Gateway rate limit
+	var platformCfgStore platformconfig.Store
+	if db != nil {
+		if pgStore, err := platformconfig.NewPostgresStore(db); err == nil {
+			platformCfgStore = pgStore
+			snap := pgStore.GetSnapshot(context.Background())
+			if rateCfg.Enabled && snap.RateLimitRPS > 0 {
+				limiter.UpdateRate(snap.RateLimitRPS, snap.RateLimitBurst)
+			}
+		} else {
+			log.Printf("[PlatformConfig] WARN: failed to initialize Postgres platform config store: %v", err)
+			platformCfgStore = platformconfig.NewMemoryStore()
+		}
+	} else {
+		platformCfgStore = platformconfig.NewMemoryStore()
+	}
 
 	// Optionally initialize gRPC reliability client if upstream address is set
 	var relSvc proxy.ReliabilityService
@@ -396,6 +415,15 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 					agentruntime.WithDefaultExecutorProvider("openai"),
 					agentruntime.WithToolGateway(toolGw),
 					agentruntime.WithCalibrationInterval(10),
+					agentruntime.WithCalibrationIntervalProvider(func(ctx context.Context) int {
+						return platformCfgStore.GetSnapshot(ctx).CalibrationSamplingInterval
+					}),
+					agentruntime.WithDefaultThresholdProvider(func(ctx context.Context) float64 {
+						return platformCfgStore.GetSnapshot(ctx).DefaultReliabilityThreshold
+					}),
+					agentruntime.WithRetrievalTopKProvider(func(ctx context.Context) int {
+						return platformCfgStore.GetSnapshot(ctx).RetrievalTopK
+					}),
 				}
 				if relSvc != nil {
 					execOpts = append(execOpts, agentruntime.WithReliabilityService(proxy.NewRuntimeAdapter(relSvc)))
@@ -421,21 +449,33 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		TenantChecker: identSvc,
 	})
 
+	var retentionUpdater gatewayhttp.RetentionUpdater
+	if tempClient != nil {
+		retentionUpdater = tempClient
+	}
+	platformConfigHandler := gatewayhttp.NewPlatformConfigHandler(
+		platformCfgStore,
+		limiter,
+		retentionUpdater,
+		identSvc,
+	)
+
 	gwHandler := gatewayhttp.NewGateway(gatewayhttp.GatewayConfig{
-		JWTValidator:       jwtValidator,
-		RateLimiter:        limiter,
-		RegistryClient:     grpcClient,
-		RegistryService:    regServiceInstance,
-		ReliabilityService: relSvc,
-		ExecutionClient:    execClient,
-		TemporalClient:     tempClient,
-		CredentialHandler:  credHandler,
-		IdentityHandler:    identHandler,
-		IdentityService:    identSvc,
-		ToolsHandler:       toolsHandler,
-		AgentRuntime:       agentRuntimeInstance,
-		ReviewClient:       grpcReviewClient,
-		ReviewWSHandler:    wsHandler,
+		JWTValidator:          jwtValidator,
+		RateLimiter:           limiter,
+		RegistryClient:        grpcClient,
+		RegistryService:       regServiceInstance,
+		ReliabilityService:    relSvc,
+		ExecutionClient:       execClient,
+		TemporalClient:        tempClient,
+		CredentialHandler:     credHandler,
+		IdentityHandler:       identHandler,
+		IdentityService:       identSvc,
+		ToolsHandler:          toolsHandler,
+		AgentRuntime:          agentRuntimeInstance,
+		ReviewClient:          grpcReviewClient,
+		ReviewWSHandler:       wsHandler,
+		PlatformConfigHandler: platformConfigHandler,
 	})
 
 	var outboxCancel context.CancelFunc
@@ -470,6 +510,7 @@ func NewServer(cfg Config, db *gorm.DB) (*Server, error) {
 		outboxCancel:        outboxCancel,
 		WSHub:               wsHub,
 		wsConsumerCancel:    wsConsumerCancel,
+		PlatformConfigStore: platformCfgStore,
 	}, nil
 }
 

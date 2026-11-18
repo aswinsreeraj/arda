@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	namespacepb "go.temporal.io/api/namespace/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Client wraps the Temporal SDK client for dispatching and inspecting ARDA workflows.
@@ -121,6 +125,30 @@ func (c *Client) ExecuteAgentWorkflow(ctx context.Context, workflowID string, in
 	}
 
 	return result, nil
+}
+
+// UpdateRetention updates the Temporal namespace's workflow execution history retention TTL in days.
+func (c *Client) UpdateRetention(ctx context.Context, days int) error {
+	if c == nil || c.client == nil {
+		return fmt.Errorf("temporal client is not initialized")
+	}
+	if days < 1 || days > 365 {
+		return fmt.Errorf("retention days must be between 1 and 365")
+	}
+	ns := c.config.Namespace
+	if ns == "" {
+		ns = DefaultNamespace
+	}
+	_, err := c.client.WorkflowService().UpdateNamespace(ctx, &workflowservice.UpdateNamespaceRequest{
+		Namespace: ns,
+		Config: &namespacepb.NamespaceConfig{
+			WorkflowExecutionRetentionTtl: durationpb.New(time.Duration(days) * 24 * time.Hour),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update temporal namespace %q retention to %dd: %w", ns, days, err)
+	}
+	return nil
 }
 
 // Close closes the underlying Temporal SDK client.

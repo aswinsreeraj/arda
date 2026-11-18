@@ -58,6 +58,7 @@ type ReliabilityRequest struct {
 	ExecutionID          string               `json:"execution_id,omitempty"`
 	ExecutionMode        domain.ExecutionMode `json:"execution_mode,omitempty"`
 	ReliabilityThreshold float64              `json:"reliability_threshold"`
+	RetrievalTopK        int                  `json:"retrieval_top_k,omitempty"`
 	CaseDescription      string               `json:"case_description,omitempty"`
 	ProposedDecision     string               `json:"proposed_decision,omitempty"`
 	ActionType           string               `json:"action_type,omitempty"` // "decision" or "tool_call"

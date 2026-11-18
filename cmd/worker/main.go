@@ -15,6 +15,7 @@ import (
 	"github.com/aswinsreeraj/arda/pkg/database"
 	"github.com/aswinsreeraj/arda/pkg/mcp"
 	"github.com/aswinsreeraj/arda/pkg/mcp/simulator"
+	"github.com/aswinsreeraj/arda/pkg/platformconfig"
 	"github.com/aswinsreeraj/arda/pkg/temporal"
 	"github.com/aswinsreeraj/arda/pkg/toolgateway"
 	"github.com/aswinsreeraj/arda/pkg/vault"
@@ -256,7 +257,25 @@ func main() {
 		agentruntime.WithDefaultModel("gpt-4o"),
 		agentruntime.WithDefaultExecutorProvider(defaultProvider),
 		agentruntime.WithToolGateway(toolGw),
-		agentruntime.WithCalibrationInterval(10), // Every 10th autonomous decision is escalated for calibration
+		agentruntime.WithCalibrationInterval(10), // Fallback if platform config store unavailable
+	}
+	if db != nil {
+		if platformCfgStore, err := platformconfig.NewPostgresStore(db.DB); err == nil {
+			execOpts = append(execOpts,
+				agentruntime.WithCalibrationIntervalProvider(func(ctx context.Context) int {
+					return platformCfgStore.GetSnapshot(ctx).CalibrationSamplingInterval
+				}),
+				agentruntime.WithDefaultThresholdProvider(func(ctx context.Context) float64 {
+					return platformCfgStore.GetSnapshot(ctx).DefaultReliabilityThreshold
+				}),
+				agentruntime.WithRetrievalTopKProvider(func(ctx context.Context) int {
+					return platformCfgStore.GetSnapshot(ctx).RetrievalTopK
+				}),
+			)
+			log.Printf("  Platform Config:  live PostgreSQL-backed settings enabled")
+		} else {
+			log.Printf("WARN: Failed to initialize platform config store in worker: %v", err)
+		}
 	}
 	relAddr := os.Getenv("RELIABILITY_SERVICE_ADDR")
 	if relAddr != "" {

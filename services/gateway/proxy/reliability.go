@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	ardav1 "github.com/aswinsreeraj/arda/gen/go/arda/v1"
 	"github.com/aswinsreeraj/arda/pkg/agentruntime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 // ErrUnconfigured is returned when no upstream address is configured for the reliability service.
@@ -97,7 +99,12 @@ func (a *RuntimeAdapter) Evaluate(ctx context.Context, req agentruntime.Reliabil
 		ReliabilityThreshold: req.ReliabilityThreshold,
 	}
 
-	resp, err := a.client.Gate(ctx, grpcReq)
+	callCtx := ctx
+	if req.RetrievalTopK > 0 {
+		callCtx = metadata.AppendToOutgoingContext(ctx, "x-retrieval-top-k", strconv.Itoa(req.RetrievalTopK))
+	}
+
+	resp, err := a.client.Gate(callCtx, grpcReq)
 	if err != nil {
 		return agentruntime.ReliabilityEvaluation{}, err
 	}

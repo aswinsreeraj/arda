@@ -47,10 +47,11 @@ type GatewayConfig struct {
 	CredentialHandler  *credentials.Handler
 	IdentityHandler    *identity.Handler
 	IdentityService    *identity.Service
-	ToolsHandler       *ToolsHandler
-	AgentRuntime       agentruntime.AgentRuntime
-	ReviewClient       ardav1.ReviewServiceClient
-	ReviewWSHandler    http.Handler
+	ToolsHandler          *ToolsHandler
+	AgentRuntime          agentruntime.AgentRuntime
+	ReviewClient          ardav1.ReviewServiceClient
+	ReviewWSHandler       http.Handler
+	PlatformConfigHandler *PlatformConfigHandler
 }
 
 // NewGateway creates and configures the API Gateway root http.Handler.
@@ -404,6 +405,29 @@ func NewGateway(cfg GatewayConfig) http.Handler {
 			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
 			cfg.IdentityHandler.GetPlatformHealthHandler,
 		)
+	}
+
+	// Platform Configuration & Operator Audit Activity
+	if cfg.PlatformConfigHandler != nil {
+		api.GET("/v1/platform/config",
+			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
+			cfg.PlatformConfigHandler.GetPlatformConfigHandler,
+		)
+		api.PUT("/v1/platform/config",
+			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
+			cfg.PlatformConfigHandler.UpdatePlatformConfigHandler,
+		)
+		api.GET("/v1/platform/activity",
+			auth.RequireActionMiddleware(auth.ActionPlatformManage, WriteErrorResponse),
+			cfg.PlatformConfigHandler.ListPlatformActivityHandler,
+		)
+		api.GET("/v1/platform/defaults",
+			auth.RequireActionMiddleware(auth.ActionAgentRead, WriteErrorResponse),
+			cfg.PlatformConfigHandler.GetPlatformDefaultsHandler,
+		)
+	}
+
+	if cfg.IdentityHandler != nil {
 
 		api.POST("/v1/tenants",
 			auth.RequireActionMiddleware(auth.ActionTenantCreate, WriteErrorResponse),

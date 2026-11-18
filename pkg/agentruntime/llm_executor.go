@@ -73,9 +73,33 @@ func WithFailClosed(failClosed bool) LLMExecutorOption {
 // are escalated for active learning calibration (every Nth autonomous decision).
 func WithCalibrationInterval(n int) LLMExecutorOption {
 	return func(e *LLMExecutor) {
-		if n > 0 {
+		if n >= 0 {
 			e.calibrationInterval = n
 		}
+	}
+}
+
+// WithCalibrationIntervalProvider supplies a dynamic function returning the live
+// calibration sampling interval N (0 disables periodic sampling).
+func WithCalibrationIntervalProvider(fn func(ctx context.Context) int) LLMExecutorOption {
+	return func(e *LLMExecutor) {
+		e.calibrationIntervalProvider = fn
+	}
+}
+
+// WithDefaultThresholdProvider supplies a dynamic function returning the platform-wide
+// fallback reliability confidence threshold when an agent version does not set one.
+func WithDefaultThresholdProvider(fn func(ctx context.Context) float64) LLMExecutorOption {
+	return func(e *LLMExecutor) {
+		e.defaultThresholdProvider = fn
+	}
+}
+
+// WithRetrievalTopKProvider supplies a dynamic function returning the platform-wide
+// pgvector neighbor count (top_k) passed to the Reliability Service.
+func WithRetrievalTopKProvider(fn func(ctx context.Context) int) LLMExecutorOption {
+	return func(e *LLMExecutor) {
+		e.retrievalTopKProvider = fn
 	}
 }
 
@@ -84,17 +108,20 @@ func WithCalibrationInterval(n int) LLMExecutorOption {
 // LLMClient, dispatching tools through ToolGateway, enforcing budgets, consulting the ReliabilityService,
 // and packaging the outcome into a validated ExecutionResult.
 type LLMExecutor struct {
-	llmClient           LLMClient
-	configProvider      AgentConfigProvider
-	promptBuilder       *PromptBuilder
-	toolGateway         ToolGateway
-	reliabilityService  ReliabilityService
-	budgetConfig        *BudgetConfig
-	failClosed          bool
-	defaultModel        string
-	defaultProvider     string
-	calibrationInterval int
-	autonomousCounter   uint64
+	llmClient                   LLMClient
+	configProvider              AgentConfigProvider
+	promptBuilder               *PromptBuilder
+	toolGateway                 ToolGateway
+	reliabilityService          ReliabilityService
+	budgetConfig                *BudgetConfig
+	failClosed                  bool
+	defaultModel                string
+	defaultProvider             string
+	calibrationInterval         int
+	calibrationIntervalProvider func(ctx context.Context) int
+	defaultThresholdProvider    func(ctx context.Context) float64
+	retrievalTopKProvider       func(ctx context.Context) int
+	autonomousCounter           uint64
 }
 
 // NewLLMExecutor creates an LLMExecutor with mandatory LLMClient and AgentConfigProvider dependencies.
@@ -121,12 +148,41 @@ func NewLLMExecutor(llmClient LLMClient, configProvider AgentConfigProvider, opt
 	return exec, nil
 }
 
-func (e *LLMExecutor) isCalibrationSample() bool {
-	if e.calibrationInterval <= 0 {
-		return false
+func (e *LLMExecutor) effectiveCalibrationInterval(ctx context.Context) int {
+	if e.calibrationIntervalProvider != nil {
+		return e.calibrationIntervalProvider(ctx)
+	}
+	return e.calibrationInterval
+}
+
+func (e *LLMExecutor) effectiveThreshold(ctx context.Context, cfg domain.Configuration) float64 {
+	if cfg.ReliabilityThreshold > 0 {
+		return cfg.ReliabilityThreshold
+	}
+	if e.defaultThresholdProvider != nil {
+		if v := e.defaultThresholdProvider(ctx); v > 0 && v <= 1.0 {
+			return v
+		}
+	}
+	return 0.85
+}
+
+func (e *LLMExecutor) effectiveRetrievalTopK(ctx context.Context) int {
+	if e.retrievalTopKProvider != nil {
+		if k := e.retrievalTopKProvider(ctx); k > 0 {
+			return k
+		}
+	}
+	return 0
+}
+
+func (e *LLMExecutor) isCalibrationSample(ctx context.Context) (bool, int) {
+	interval := e.effectiveCalibrationInterval(ctx)
+	if interval <= 0 {
+		return false, 0
 	}
 	count := atomic.AddUint64(&e.autonomousCounter, 1)
-	return count%uint64(e.calibrationInterval) == 0
+	return count%uint64(interval) == 0, interval
 }
 
 // Execute runs the agent against the provided input payload. It enforces execution budgets,
@@ -427,6 +483,7 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 
 			// Check Reliability Service when execution mode is gated or ReliabilityService is provided,
 			// unless explicitly skipped via agent configuration or per-run request flag.
+			effectiveRelThreshold := e.effectiveThreshold(reqCtx, cfg)
 			relDecisionStr := ""
 			var relConfidence *float64
 			relReasonCode := ""
@@ -444,7 +501,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					AgentVersionID:       input.AgentVersionID,
 					ExecutionID:          executionID,
 					ExecutionMode:        cfg.ExecutionMode,
-					ReliabilityThreshold: cfg.ReliabilityThreshold,
+					ReliabilityThreshold: effectiveRelThreshold,
+					RetrievalTopK:        e.effectiveRetrievalTopK(reqCtx),
 					CaseDescription:      buildCaseDescription(cleanPayload, prompt),
 					ProposedDecision:     resp.Content,
 					ActionType:           "decision",
@@ -470,13 +528,13 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 				switch relEval.Decision {
 				case ReliabilityAllow:
 					// Periodic calibration sampling: every Nth autonomous decision is escalated for active learning calibration
-					if e.isCalibrationSample() {
+					if sampled, interval := e.isCalibrationSample(reqCtx); sampled {
 						usage := tracker.TokenUsage()
-						reason := fmt.Sprintf("Active learning calibration sample (1-in-%d): autonomous decision routed for human review", e.calibrationInterval)
+						reason := fmt.Sprintf("Active learning calibration sample (1-in-%d): autonomous decision routed for human review", interval)
 						calOut := map[string]any{
 							"escalation_reason":     reason,
 							"confidence":            relEval.Confidence,
-							"reliability_threshold": cfg.ReliabilityThreshold,
+							"reliability_threshold": effectiveRelThreshold,
 							"reason_code":           "CALIBRATION_SAMPLE",
 							"calibration_sampling":  true,
 							"content":               resp.Content,
@@ -511,12 +569,12 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 					usage := tracker.TokenUsage()
 					reason := relEval.Reason
 					if reason == "" {
-						reason = fmt.Sprintf("reliability threshold not met (confidence: %.2f < %.2f)", relEval.Confidence, cfg.ReliabilityThreshold)
+						reason = fmt.Sprintf("reliability threshold not met (confidence: %.2f < %.2f)", relEval.Confidence, effectiveRelThreshold)
 					}
 					escOut := map[string]any{
 						"escalation_reason":     reason,
 						"confidence":            relEval.Confidence,
-						"reliability_threshold": cfg.ReliabilityThreshold,
+						"reliability_threshold": effectiveRelThreshold,
 						"reason_code":           relEval.ReasonCode,
 						"content":               resp.Content,
 					}
@@ -573,8 +631,8 @@ func (e *LLMExecutor) Execute(ctx context.Context, input ExecutionInput) (Execut
 			if agentReasoning := ExtractAgentReasoning(resp.Content); agentReasoning != "" {
 				result.Output["agent_reasoning"] = agentReasoning
 			}
-			if cfg.ReliabilityThreshold > 0 {
-				result.Output["reliability_threshold"] = cfg.ReliabilityThreshold
+			if effectiveRelThreshold > 0 {
+				result.Output["reliability_threshold"] = effectiveRelThreshold
 			}
 			if resp.Model != "" {
 				result.Output["model"] = resp.Model
